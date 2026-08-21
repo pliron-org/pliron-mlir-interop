@@ -1,0 +1,37 @@
+name: pliron-mlir-interop
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Format
+      run: cargo fmt --check
+
+    - name: Clippy
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+    - name: Build
+      run: RUSTFLAGS="-D warnings" cargo build --workspace --verbose
+
+    - name: Tests (Debug)
+      run: cargo test --workspace --verbose
+
+    - name: Tests (Release)
+      run: cargo test --release --workspace --verbose
+
+    - name: Documentation
+      run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace
