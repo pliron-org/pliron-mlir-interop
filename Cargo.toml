@@ -11,7 +11,7 @@ keywords = ["pliron", "mlir", "interop", "compiler"]
 
 [dependencies]
 pliron = { git = "https://github.com/pliron-org/pliron.git" }
-pliron-llvm = { git = "https://github.com/pliron-org/pliron.git", default-features = false, std = true }
+pliron-llvm = { git = "https://github.com/pliron-org/pliron.git", default-features = false, features = ["std"] }
 thiserror = "2"
 log = { version = "0" }
 
