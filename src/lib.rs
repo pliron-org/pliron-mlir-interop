@@ -7,12 +7,12 @@
 //! in the IR being translated must implement [ToMlirOp], [ToMlirType] and
 //! [ToMlirAttr] respectively.
 //!
-//! The primary entry point is [op_to_mlir_string].
-//!
-//! If you don't want to build an entire [String] and want to implement your own
-//! [Display](std::fmt::Display) object, you can use the functions in [printers].
+//! The primary entry point is [`MlirPrinter`], which can be built with
+//! [`Ptr<Operation>`](Operation), [`TypeHandle`] or [`dyn Attribute`](Attribute).
+//! [`MlirPrinter`] implements [Display], which is the final path to printing
+//! the output MLIR text.
 
-use crate::printers::{print_generic_op, print_op};
+use crate::printers::{print_attr, print_generic_op, print_op, print_type};
 use pliron::{
     attribute::Attribute,
     context::{Context, Ptr},
@@ -21,9 +21,12 @@ use pliron::{
     operation::Operation,
     printable::State,
     result::{Error as PlironError, Result},
-    r#type::Type,
+    r#type::{Type, TypeHandle},
 };
-use std::{cell::Cell, fmt};
+use std::{
+    cell::Cell,
+    fmt::{self, Display},
+};
 use thiserror::Error;
 
 pub mod printers;
@@ -93,41 +96,105 @@ pub trait ToMlirOp {
     }
 }
 
-/// Translate an [Operation] (and everything nested within it) to MLIR text.
+/// IR entities that can be printed to MLIR text.
+pub trait MlirPrinterT {
+    fn mlir_print(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()>;
+}
+
+/// A convenience type that implements [Display] for [MlirPrinterT].
 ///
-/// This is a wrapper around `print_op` that converts errors suitably.
-pub fn op_to_mlir_string(ctx: &Context, op: Ptr<Operation>) -> Result<String> {
-    use fmt::Write as _;
+/// Upon failure, the error is stored internally and can be consumed using [Self::take_error].
+///
+/// Example:
+///
+/// ```
+/// use pliron::{context::Context, input_err_noloc, printable::{State, Printable}, result::Result};
+/// use pliron_mlir_interop::{MlirPrinter, MlirPrinterT};
+/// use std::fmt::{self, Write};
+///
+/// /// An demo type that implements [MlirPrinterT].
+/// struct MyEntity(bool);
+///
+/// impl MlirPrinterT for MyEntity {
+///     fn mlir_print(
+///         &self,
+///         _ctx: &Context,
+///         _state: &State,
+///         f: &mut fmt::Formatter<'_>,
+///     ) -> Result<()> {
+///        if self.0 {
+///            write!(f, "my.entity")?;
+///        } else {
+///            return input_err_noloc!("Some error");
+///        }
+///        Ok(())
+///     }
+/// }
+///
+/// let ctx = Context::new();
+/// let printer = MlirPrinter::new(&ctx, &MyEntity(true));
+///
+/// let mut out = String::new();
+/// match write!(&mut out, "{printer}") {
+///    Ok(()) => {
+///        println!("{out}");
+///    }
+///    Err(fmt::Error) => {
+///        // Get the real error from the printer.
+///        let err = printer.take_error().expect("Printing failed, so an error must be set");
+///        eprintln!("{}", err.disp(&ctx));
+///    }
+/// }
+/// ```
+pub struct MlirPrinter<'a, T: MlirPrinterT + ?Sized> {
+    entity: &'a T,
+    ctx: &'a Context,
+    state: State,
+    error: Cell<Option<PlironError>>,
+}
 
-    struct Printer<'a> {
-        ctx: &'a Context,
-        op: Ptr<Operation>,
-        state: State,
-        error: Cell<Option<PlironError>>,
-    }
-
-    impl fmt::Display for Printer<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            print_op(self.ctx, self.op, &self.state, f).map_err(|e| {
-                self.error.set(Some(e));
-                fmt::Error
-            })
+impl<'a, T: MlirPrinterT + ?Sized> MlirPrinter<'a, T> {
+    /// Create a new [MlirPrinter]
+    pub fn new(ctx: &'a Context, entity: &'a T) -> Self {
+        Self {
+            entity,
+            ctx,
+            state: State::default(),
+            error: Cell::new(None),
         }
     }
 
-    let printer = Printer {
-        ctx,
-        op,
-        state: State::default(),
-        error: Cell::new(None),
-    };
+    /// If there was a failure, consume the error.
+    pub fn take_error(&self) -> Option<PlironError> {
+        self.error.take()
+    }
+}
 
-    let mut buf = String::new();
-    match write!(buf, "{printer}") {
-        Ok(()) => Ok(buf),
-        Err(_) => Err(printer
-            .error
-            .into_inner()
-            .expect("Printer::fmt failed without recording an error")),
+impl<'a, T: MlirPrinterT + ?Sized> Display for MlirPrinter<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.entity
+            .mlir_print(self.ctx, &self.state, f)
+            .map_err(|e| {
+                self.error.set(Some(e));
+                fmt::Error
+            })
+    }
+}
+
+impl MlirPrinterT for Ptr<Operation> {
+    fn mlir_print(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
+        print_op(ctx, *self, state, f)
+    }
+}
+
+impl MlirPrinterT for TypeHandle {
+    fn mlir_print(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
+        print_type(ctx, *self, state, f)
+    }
+}
+
+impl MlirPrinterT for dyn Attribute {
+    fn mlir_print(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
+        print_attr(ctx, self, state, f)
     }
 }

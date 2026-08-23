@@ -8,6 +8,7 @@ use std::fmt;
 use pliron::{
     attribute::{Attribute, attr_cast},
     basic_block::BasicBlock,
+    builtin::attributes::ATTR_KEY_GIVEN_NAMES,
     common_traits::Named,
     context::{Context, Ptr},
     input_err, input_err_noloc,
@@ -144,9 +145,18 @@ pub fn print_generic_op(
         write!(f, ")")?;
     }
 
-    if !operation.attributes.0.is_empty() {
+    // `ATTR_KEY_GIVEN_NAMES` holds pliron's names for results and block arguments.
+    // Those become actual names when translating to MLIR. So we skip them as attributes.
+    let mut attrs = operation
+        .attributes
+        .0
+        .iter()
+        .filter(|(key, _)| **key != *ATTR_KEY_GIVEN_NAMES)
+        .peekable();
+
+    if attrs.peek().is_some() {
         write!(f, " {{")?;
-        for (i, (key, val)) in operation.attributes.0.iter().enumerate() {
+        for (i, (key, val)) in attrs.enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
