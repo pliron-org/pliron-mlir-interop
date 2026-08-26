@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) The pliron-mlir-interop contributors
 
-//! Pliron -> Textual MLIR
+//! # Pliron -> Textual MLIR
 //!
 //! Translation is interface-driven. Every [Op], [Type] and [Attribute]
 //! in the IR being translated must implement [ToMlirOp], [ToMlirType] and
@@ -12,7 +12,7 @@
 //! [`MlirPrinter`] implements [Display], which is the final path to printing
 //! the output MLIR text.
 //!
-//! # Example
+//! ## An Example
 //!
 //! Printing an empty [`ModuleOp`](pliron::builtin::ops::ModuleOp) to MLIR text:
 //!
@@ -34,7 +34,7 @@
 //!
 //! See [`MlirPrinter`] documentation for handling translation errors.
 //!
-//! # Printing an Op: Control vs Convenience
+//! ## Printing an Op: Control vs Convenience
 //!
 //! By manually implementing [ToMlirOp], dialect authors have full control over
 //! how the MLIR equivalent must be printed.
