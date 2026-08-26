@@ -8,15 +8,43 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The testsuite verifies its translated MLIR with this binary.
+  MLIR_OPT: /usr/lib/llvm-22/bin/mlir-opt
 
 jobs:
   build:
     name: Build and Test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - uses: dtolnay/rust-toolchain@stable
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Configure apt archive cache directory
+      run: |
+        mkdir -p ~/.cache/apt-archives
+        echo 'Dir::Cache::Archives "'"$HOME"'/.cache/apt-archives";' | sudo tee /etc/apt/apt.conf.d/99-archives-cache
+
+    - name: Cache LLVM apt packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/apt-archives
+        key: llvm-22-apt-archives-${{ runner.os }}
+
+    - name: Setup LLVM
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 22
+        sudo apt-get install -y mlir-22-tools
+        # apt falls back to downloading as root when the sandboxed `_apt`
+        # user can't write into our redirected (non-standard) cache dir,
+        # leaving root-owned files that the later cache-save step (running
+        # unprivileged) can't read. Reclaim ownership so caching works.
+        sudo chown -R "$(id -u):$(id -g)" ~/.cache/apt-archives
+        "$MLIR_OPT" --version
 
     - name: Format
       run: cargo fmt --check

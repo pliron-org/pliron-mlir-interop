@@ -1,6 +1,8 @@
 #!/bin/bash
 
-# Pre-CI tests to run locally before pushing to GitHub
+# Pre-CI tests to run locally before pushing to GitHub.
+#
+# Set $MLIR_OPT to verify translated MLIR.
 
 set -ex
 

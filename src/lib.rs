@@ -3,7 +3,7 @@
 
 //! Pliron -> Textual MLIR
 //!
-//! Translation is interfaces driven. Every [Op], [Type] and [Attribute]
+//! Translation is interface-driven. Every [Op], [Type] and [Attribute]
 //! in the IR being translated must implement [ToMlirOp], [ToMlirType] and
 //! [ToMlirAttr] respectively.
 //!
@@ -11,6 +11,42 @@
 //! [`Ptr<Operation>`](Operation), [`TypeHandle`] or [`dyn Attribute`](Attribute).
 //! [`MlirPrinter`] implements [Display], which is the final path to printing
 //! the output MLIR text.
+//!
+//! # Example
+//!
+//! Printing an empty [`ModuleOp`](pliron::builtin::ops::ModuleOp) to MLIR text:
+//!
+//! ```
+//! use pliron::{builtin::ops::ModuleOp, context::Context, op::Op};
+//! use pliron_mlir_interop::MlirPrinter;
+//!
+//! let ctx = &mut Context::new();
+//! let module = ModuleOp::new(ctx, "a_module".try_into().unwrap());
+//!
+//! let printed = MlirPrinter::new(ctx, &module.get_operation()).to_string();
+//! assert_eq!(
+//!     printed,
+//!     r#""builtin.module"() <{sym_name = "a_module"}> ({
+//!   ^block1v1:
+//! }) : () -> ()"#
+//! );
+//! ```
+//!
+//! See [`MlirPrinter`] documentation for handling translation errors.
+//!
+//! # Printing an Op: Control vs Convenience
+//!
+//! By manually implementing [ToMlirOp], dialect authors have full control over
+//! how the MLIR equivalent must be printed.
+//!
+//! To simplify common cases, two convenience utilities are provided:
+//!
+//! 1. The default implementation of [ToMlirOp] just calls [print_generic_op] with
+//!    [Op::get_opid()] as the mnemonic. This however may not be sufficient,
+//!    especially when attributes need translating to MLIR's properties or
+//!    discardable attributes, or when their keys differ from their MLIR equivalent.
+//! 2. The [GenericOp](printers::GenericOp) builder, which allows customizing certain
+//!    aspects of the translation / printing.
 
 use crate::printers::{print_attr, print_generic_op, print_op, print_type};
 use pliron::{
@@ -29,6 +65,8 @@ use std::{
 };
 use thiserror::Error;
 
+pub mod builtin;
+pub mod llvm;
 pub mod printers;
 
 #[derive(Debug, Error)]
@@ -41,6 +79,8 @@ pub enum Error {
     MissingTypeTranslation(String),
     #[error("Attribute `{0}` does not implement ToMlirAttr")]
     MissingAttrTranslation(String),
+    #[error("Cannot translate to MLIR: {0}")]
+    Untranslatable(String),
 }
 
 /// A pliron [Type] that can be converted to MLIR.
@@ -74,7 +114,10 @@ pub trait ToMlirAttr {
 /// A pliron [Op] that can be converted to MLIR.
 ///
 /// The default implementation calls [print_generic_op]
-/// with `Self::get_opid()` as the mnemonic. Override [Self::to_mlir] as necessary.
+/// with `Self::get_opid()` as the mnemonic.
+///
+/// A manual implementation (override) will typically use
+/// [GenericOp](printers::GenericOp).
 #[op_interface]
 pub trait ToMlirOp {
     /// Print `self` (including any nested regions) as MLIR operation syntax.
