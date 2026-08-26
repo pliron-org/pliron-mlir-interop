@@ -3,12 +3,12 @@
 
 //! # Pliron -> Textual MLIR
 //!
-//! Translation is interface-driven. Every [Op], [Type] and [Attribute]
+//! Translation is interface-driven. Every `Op`, `Type` and `Attribute`
 //! in the IR being translated must implement [ToMlirOp], [ToMlirType] and
 //! [ToMlirAttr] respectively.
 //!
 //! The primary entry point is [`MlirPrinter`], which can be built with
-//! [`Ptr<Operation>`](Operation), [`TypeHandle`] or [`dyn Attribute`](Attribute).
+//! `Ptr<Operation>`, `TypeHandle` or `dyn Attribute`.
 //! [`MlirPrinter`] implements [Display], which is the final path to printing
 //! the output MLIR text.
 //!
@@ -42,7 +42,7 @@
 //! To simplify common cases, two convenience utilities are provided:
 //!
 //! 1. The default implementation of [ToMlirOp] just calls [print_generic_op] with
-//!    [Op::get_opid()] as the mnemonic. This however may not be sufficient,
+//!    `Op::get_opid()` as the mnemonic. This however may not be sufficient,
 //!    especially when attributes need translating to MLIR's properties or
 //!    discardable attributes, or when their keys differ from their MLIR equivalent.
 //! 2. The [GenericOp](printers::GenericOp) builder, which allows customizing certain
