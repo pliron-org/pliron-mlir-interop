@@ -146,9 +146,27 @@ pub trait MlirPrinterT {
 
 /// A convenience type that implements [Display] for [MlirPrinterT].
 ///
-/// **Note**: [Display] based methods such as [ToString::to_string] or [format!]
-/// will cause a panic on formatting failures. To process failures without panicking,
-/// use the [TryFrom] conversion to [String].
+/// In the simplest case, [Display] based methods such as [ToString::to_string]
+/// or [format!] yield the MLIR text:
+///
+/// ```
+/// use pliron::{builtin::ops::ModuleOp, context::Context, op::Op};
+/// use pliron_mlir_interop::MlirPrinter;
+///
+/// let ctx = &mut Context::new();
+/// let module = ModuleOp::new(ctx, "a_module".try_into().unwrap());
+///
+/// let printed = MlirPrinter::new(ctx, &module.get_operation()).to_string();
+/// assert_eq!(
+///     printed,
+///     r#""builtin.module"() <{sym_name = "a_module"}> ({
+///   ^block1v1:
+/// }) : () -> ()"#
+/// );
+/// ```
+///
+/// Such methods will, however, cause a panic on formatting failures.
+/// To process failures without panicking, use the [TryFrom] conversion to [String].
 ///
 /// Example:
 ///

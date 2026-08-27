@@ -14,9 +14,8 @@ respectively. `MlirPrinter` is the entry point, and implements `Display`.
 See the [crate docs](https://pliron-org.github.io/pliron-mlir-interop/pliron_mlir_interop/)
 for more information.
 
-Translations for pliron's [builtin](src/builtin/) and [LLVM](src/llvm/)
-dialects are provided. Other dialects must implement translations using
-the above mentioned interfaces.
+Translations for pliron's `builtin` and `LLVM` dialects are provided.
+Other dialects must implement translations using the above interfaces.
 
 ### Testing
 
