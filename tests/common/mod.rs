@@ -9,7 +9,6 @@
 
 use std::{
     env,
-    fmt::Write as _,
     io::Write as _,
     process::{Command, Stdio},
 };
@@ -24,17 +23,8 @@ pub const MLIR_OPT_ENV: &str = "MLIR_OPT";
 ///
 /// Panics with the underlying pliron error if the translation fails.
 pub fn to_mlir<T: MlirPrinterT + ?Sized>(ctx: &Context, entity: &T) -> String {
-    let printer = MlirPrinter::new(ctx, entity);
-    let mut out = String::new();
-    match write!(&mut out, "{printer}") {
-        Ok(()) => out,
-        Err(_) => {
-            let err = printer
-                .take_error()
-                .expect("printing failed, so an error must be set");
-            panic!("MLIR translation failed: {}", err.disp(ctx));
-        }
-    }
+    String::try_from(MlirPrinter::new(ctx, entity))
+        .unwrap_or_else(|err| panic!("MLIR translation failed: {}", err.disp(ctx)))
 }
 
 /// The `mlir-opt` to verify with: `$MLIR_OPT` if set, else `mlir-opt` on `PATH`.

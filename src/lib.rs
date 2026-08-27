@@ -14,7 +14,7 @@
 //!
 //! ## An Example
 //!
-//! Printing an empty [`ModuleOp`](pliron::builtin::ops::ModuleOp) to MLIR text:
+//! Printing an empty `ModuleOp` to MLIR text:
 //!
 //! ```
 //! use pliron::{builtin::ops::ModuleOp, context::Context, op::Op};
@@ -43,7 +43,7 @@
 //!
 //! 1. The default implementation of [ToMlirOp] just calls [print_generic_op] with
 //!    `Op::get_opid()` as the mnemonic. This however may not be sufficient,
-//!    especially when attributes need translating to MLIR's properties or
+//!    especially when attributes need translation to MLIR's properties or
 //!    discardable attributes, or when their keys differ from their MLIR equivalent.
 //! 2. The [GenericOp](printers::GenericOp) builder, which allows customizing certain
 //!    aspects of the translation / printing.
@@ -83,7 +83,7 @@ pub enum Error {
     Untranslatable(String),
 }
 
-/// A pliron [Type] that can be converted to MLIR.
+/// A pliron `Type` that can be converted to MLIR.
 #[type_interface]
 pub trait ToMlirType {
     /// Print `self` as MLIR type syntax (e.g. `i32`, `!llvm.ptr`).
@@ -97,7 +97,7 @@ pub trait ToMlirType {
     }
 }
 
-/// A pliron [Attribute] that can be converted to MLIR.
+/// A pliron `Attribute` that can be converted to MLIR.
 #[attr_interface]
 pub trait ToMlirAttr {
     /// Print `self` as MLIR attribute syntax (e.g. `42 : i64`, `"foo"`).
@@ -111,7 +111,7 @@ pub trait ToMlirAttr {
     }
 }
 
-/// A pliron [Op] that can be converted to MLIR.
+/// A pliron `Op` that can be converted to MLIR.
 ///
 /// The default implementation calls [print_generic_op]
 /// with `Self::get_opid()` as the mnemonic.
@@ -146,16 +146,18 @@ pub trait MlirPrinterT {
 
 /// A convenience type that implements [Display] for [MlirPrinterT].
 ///
-/// Upon failure, the error is stored internally and can be consumed using [Self::take_error].
+/// **Note**: [Display] based methods such as [ToString::to_string] or [format!]
+/// will cause a panic on formatting failures. To process failures without panicking,
+/// use the [TryFrom] conversion to [String].
 ///
 /// Example:
 ///
 /// ```
 /// use pliron::{context::Context, input_err_noloc, printable::{State, Printable}, result::Result};
 /// use pliron_mlir_interop::{MlirPrinter, MlirPrinterT};
-/// use std::fmt::{self, Write};
+/// use std::fmt;
 ///
-/// /// An demo type that implements [MlirPrinterT].
+/// /// A demo type that implements [MlirPrinterT].
 /// struct MyEntity(bool);
 ///
 /// impl MlirPrinterT for MyEntity {
@@ -168,25 +170,66 @@ pub trait MlirPrinterT {
 ///        if self.0 {
 ///            write!(f, "my.entity")?;
 ///        } else {
-///            return input_err_noloc!("Some error");
+///            return input_err_noloc!("MyEntity error");
 ///        }
 ///        Ok(())
 ///     }
 /// }
 ///
 /// let ctx = Context::new();
-/// let printer = MlirPrinter::new(&ctx, &MyEntity(true));
 ///
-/// let mut out = String::new();
-/// match write!(&mut out, "{printer}") {
-///    Ok(()) => {
-///        println!("{out}");
-///    }
-///    Err(fmt::Error) => {
-///        // Get the real error from the printer.
-///        let err = printer.take_error().expect("Printing failed, so an error must be set");
-///        eprintln!("{}", err.disp(&ctx));
-///    }
+/// // Using [TryFrom] to try and convert to a [String].
+/// assert_eq!(String::try_from(MlirPrinter::new(&ctx, &MyEntity(true))).unwrap(), "my.entity");
+///
+/// let printer = MlirPrinter::new(&ctx, &MyEntity(false));
+/// let err = String::try_from(printer).expect_err("MyEntity(false) does not print");
+/// assert!(err.disp(&ctx).to_string().contains("MyEntity error"));
+/// ```
+///
+/// To avoid the [String] allocation and write directly to, say, stdout, while
+/// still handling errors, an [fmt::Write] to [std::io::Write] adapter is needed
+/// (see <https://github.com/rust-lang/libs-team/issues/133>).
+///
+/// Example:
+///
+/// ```
+/// use pliron::{builtin::ops::ModuleOp, context::Context, op::Op, printable::Printable};
+/// use pliron_mlir_interop::MlirPrinter;
+/// use std::{fmt, fmt::Write as _, io};
+///
+/// /// Bridges an `io::Write` into `fmt::Write`, keeping the I/O error.
+/// struct IoSink<W: io::Write> {
+///     inner: W,
+///     error: Option<io::Error>,
+/// }
+///
+/// impl<W: io::Write> fmt::Write for IoSink<W> {
+///     fn write_str(&mut self, s: &str) -> fmt::Result {
+///         self.inner.write_all(s.as_bytes()).map_err(|e| {
+///             self.error = Some(e);
+///             fmt::Error
+///         })
+///     }
+/// }
+///
+/// let ctx = &mut Context::new();
+/// let module = ModuleOp::new(ctx, "a_module".try_into().unwrap());
+/// let op = module.get_operation();
+///
+/// let printer = MlirPrinter::new(ctx, &op);
+/// let mut sink = IoSink { inner: io::stdout().lock(), error: None };
+/// match writeln!(&mut sink, "{printer}") {
+///     Ok(()) => (),
+///     // Check the sink first: an I/O failure poisons the printer's stored error too.
+///     Err(fmt::Error) => match sink.error {
+///         Some(io_err) => eprintln!("I/O error: {io_err}"),
+///         None => {
+///             let err = printer
+///                 .take_error()
+///                 .expect("printing failed, so an error must be set");
+///             eprintln!("{}", err.disp(ctx));
+///         }
+///     },
 /// }
 /// ```
 pub struct MlirPrinter<'a, T: MlirPrinterT + ?Sized> {
@@ -221,6 +264,26 @@ impl<'a, T: MlirPrinterT + ?Sized> Display for MlirPrinter<'a, T> {
                 self.error.set(Some(e));
                 fmt::Error
             })
+    }
+}
+
+impl<'a, T: MlirPrinterT + ?Sized> TryFrom<MlirPrinter<'a, T>> for String {
+    type Error = PlironError;
+
+    /// Try and print [MlirPrinter] to a [String], return the pliron error on failure.
+    fn try_from(printer: MlirPrinter<'a, T>) -> core::result::Result<Self, Self::Error> {
+        use std::fmt::Write;
+        let mut out = String::new();
+        match write!(&mut out, "{printer}") {
+            Ok(()) => Ok(out),
+            Err(fmt::Error) => {
+                // Get the real error from the printer.
+                let err = printer
+                    .take_error()
+                    .expect("Printing failed, so an error must be set");
+                Err(err)
+            }
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) The pliron-mlir-interop contributors
 
-//! MLIR translation for [LLVM dialect](pliron_llvm) types.
+//! MLIR translation for LLVM dialect types.
 
 use std::{any::Any, fmt};
 

@@ -27,7 +27,7 @@ use crate::{Error, ToMlirAttr, ToMlirOp, ToMlirType};
 
 /// Dispatch to `op`'s [ToMlirOp] implementation.
 ///
-/// Fails if `op`'s concrete [pliron::op::Op] type does not implement [ToMlirOp].
+/// Fails if `op`'s concrete `Op` type does not implement [ToMlirOp].
 pub fn print_op(
     ctx: &Context,
     op: Ptr<Operation>,
@@ -47,7 +47,7 @@ pub fn print_op(
 
 /// Dispatch to `ty`'s [ToMlirType] implementation.
 ///
-/// Fails if `ty`'s concrete [pliron::type::Type] does not implement [ToMlirType].
+/// Fails if `ty`'s concrete `Type` does not implement [ToMlirType].
 pub fn print_type(
     ctx: &Context,
     ty: TypeHandle,
@@ -65,7 +65,7 @@ pub fn print_type(
 
 /// Dispatch to `attr`'s [ToMlirAttr] implementation.
 ///
-/// Fails if `attr`'s concrete [Attribute] does not implement [ToMlirAttr].
+/// Fails if `attr`'s concrete `Attribute` does not implement [ToMlirAttr].
 pub fn print_attr(
     ctx: &Context,
     attr: &dyn Attribute,
@@ -98,7 +98,7 @@ pub fn print_type_list(
 
 /// A value in one of MLIR's operation dictionaries.
 enum MlirAttr<'a> {
-    /// A pliron [Attribute], translated through [ToMlirAttr].
+    /// A pliron `Attribute`, translated through [ToMlirAttr].
     Attr(&'a dyn Attribute),
     /// Already-formatted MLIR attribute text, printed verbatim.
     Raw(String),
@@ -148,7 +148,7 @@ fn print_dict(
 ///     : (t0, t1) -> (t2, t3)
 /// ```
 ///
-/// Operands, successors and regions come from the underlying [Operation].
+/// Operands, successors and regions come from the underlying `Operation`.
 /// Results do too, unless overridden with [Self::results].
 ///
 /// MLIR carries an operation's inherent data in the `<{...}>` (properties)
@@ -176,7 +176,7 @@ impl<'a> GenericOp<'a> {
         }
     }
 
-    /// Print `results` instead of the [Operation]'s own results.
+    /// Print `results` instead of the `Operation`'s own results.
     pub fn results(mut self, results: Vec<Value>) -> Self {
         self.results = Some(results);
         self
@@ -188,7 +188,7 @@ impl<'a> GenericOp<'a> {
         self
     }
 
-    /// Add a pliron [Attribute] to the properties dictionary.
+    /// Add a pliron `Attribute` to the properties dictionary.
     pub fn prop_attr(mut self, name: &'a str, attr: &'a dyn Attribute) -> Self {
         self.properties.push((name, MlirAttr::Attr(attr)));
         self
@@ -222,7 +222,7 @@ impl<'a> GenericOp<'a> {
         self
     }
 
-    /// Add a pliron [Attribute] to the discardable attribute dictionary.
+    /// Add a pliron `Attribute` to the discardable attribute dictionary.
     fn attr_attr(mut self, name: &'a str, attr: &'a dyn Attribute) -> Self {
         self.attributes.push((name, MlirAttr::Attr(attr)));
         self
@@ -304,10 +304,10 @@ impl<'a> GenericOp<'a> {
 /// Print `op` using MLIR's generic operation syntax, forwarding every pliron
 /// attribute of `op` to MLIR's discardable attribute dictionary.
 ///
-/// [GivenNamesAttr](pliron::builtin::attributes::GivenNamesAttr) are skipped
+/// `GivenNamesAttr` are skipped
 /// since names are printed as part of the SSA definitions.
 ///
-/// This is a best-effort fallback for [Op](pliron::op::Op)s with no dedicated
+/// This is a best-effort fallback for `Op`s with no dedicated
 /// MLIR translation. Ops can customize their printing behaviour using [GenericOp],
 /// or go completely wild and implement [ToMlirOp] fully manually.
 pub fn print_generic_op(
