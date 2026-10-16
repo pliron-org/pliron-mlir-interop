@@ -56,12 +56,13 @@ fn types() {
         !llvm.struct<"Pair", opaque>"#]]
     .assert_eq(&printed.join("\n"));
 
-    // A function type is not a valid parameter type, so verify it separately.
-    let (func_types, value_types): (Vec<String>, Vec<String>) = printed
+    // Function types and opaque structs are not valid parameter types,
+    // so verify them separately.
+    let (attr_types, value_types): (Vec<String>, Vec<String>) = printed
         .into_iter()
-        .partition(|ty| ty.starts_with("!llvm.func<"));
+        .partition(|ty| ty.starts_with("!llvm.func<") || ty.ends_with(", opaque>"));
     common::verify_types(&value_types);
-    common::verify_attrs(&func_types);
+    common::verify_attrs(&attr_types);
 }
 
 /// A named struct whose body refers back to itself prints as `!llvm.struct<"name">`

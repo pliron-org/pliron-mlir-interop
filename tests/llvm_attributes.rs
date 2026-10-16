@@ -21,10 +21,10 @@ use pliron::{
 };
 use pliron_llvm::{
     attributes::{
-        AddressSpaceAttr, AlignmentAttr, AtomicOrderingAttr, AtomicRmwKindAttr, CaseValuesAttr,
-        FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr, GepIndexAttr, GepIndicesAttr,
-        ICmpPredicateAttr, InsertExtractValueIndicesAttr, IntegerOverflowFlagsAttr, LinkageAttr,
-        PoisonAttr, ShuffleVectorMaskAttr, UndefAttr, ZeroAttr,
+        AddressSpaceAttr, AlignmentAttr, AtomicOrderingAttr, AtomicRmwKindAttr, BytesAttr,
+        CaseValuesAttr, FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr, GepIndexAttr,
+        GepIndicesAttr, ICmpPredicateAttr, InsertExtractValueIndicesAttr, IntegerOverflowFlagsAttr,
+        LinkageAttr, PoisonAttr, ShuffleVectorMaskAttr, UndefAttr, ZeroAttr,
     },
     types::PointerType,
 };
@@ -78,6 +78,7 @@ fn attributes() {
             IntegerAttr::new(i32_int, APInt::from_u64(0, bw32)),
             IntegerAttr::new(i32_int, APInt::from_u64(11, bw32)),
         ])),
+        Box::new(BytesAttr::new(vec![0, 1, 255])),
     ];
 
     let printed: Vec<String> = attrs.iter().map(|a| common::to_mlir(ctx, &**a)).collect();
@@ -107,7 +108,8 @@ fn attributes() {
         array<i32: 0, -2147483648, 7>
         array<i32: -1>
         array<i32>
-        dense<[0, 11]> : vector<2xi32>"#]]
+        dense<[0, 11]> : vector<2xi32>
+        array<i8: 0, 1, -1>"#]]
     .assert_eq(&printed.join("\n"));
 
     common::verify_attrs(&printed);

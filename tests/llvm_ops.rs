@@ -9,7 +9,6 @@ use core::num::NonZero;
 
 use expect_test::expect;
 use pliron::{
-    attribute::AttrObj,
     basic_block::BasicBlock,
     builtin::{
         attributes::{IntegerAttr, StringAttr},
@@ -32,8 +31,9 @@ use pliron::{
 use pliron_llvm::{
     attributes::{
         AtomicOrderingAttr, AtomicRmwKindAttr, FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr,
-        ICmpPredicateAttr, IntegerOverflowFlagsAttr, LinkageAttr,
+        ICmpPredicateAttr, IntegerOverflowFlagsAttr, LinkageAttr, SyncScopeAttr,
     },
+    llvm_attrs::{LlvmAttrValue, LlvmAttributesAttr},
     op_interfaces::{
         AlignableOpInterface, BinArithOp, CastOpInterface, CastOpWithNNegInterface,
         FloatBinArithOpWithFastMathFlags, IntBinArithOpWithOverflowFlag,
@@ -346,7 +346,7 @@ fn memory() {
     let (n, p) = (func.arg(ctx, 0), func.arg(ctx, 1));
 
     let slot = func.push(ctx, |ctx| {
-        let alloca = AllocaOp::new(ctx, i32_ty, n);
+        let alloca = AllocaOp::new(ctx, i32_ty, n, 0);
         alloca.set_alignment(ctx, 8);
         alloca
     });
@@ -374,7 +374,7 @@ fn memory() {
             loaded,
             AtomicRmwKindAttr::Add,
             AtomicOrderingAttr::Monotonic,
-            None,
+            SyncScopeAttr::System,
         )
     });
     func.push(ctx, |ctx| {
@@ -385,21 +385,36 @@ fn memory() {
             loaded,
             AtomicOrderingAttr::AcqRel,
             AtomicOrderingAttr::Monotonic,
-            Some("agent".to_string()),
+            SyncScopeAttr::NamedScope(StringAttr::new("agent".to_string())),
         )
     });
     func.push_no_result(ctx, |ctx| {
-        FenceOp::new(ctx, AtomicOrderingAttr::SeqCst, Some("agent".to_string()))
+        FenceOp::new(
+            ctx,
+            AtomicOrderingAttr::SeqCst,
+            SyncScopeAttr::NamedScope(StringAttr::new("agent".to_string())),
+        )
     });
 
     let atomically_loaded = func.push(ctx, |ctx| {
-        let atomic_load = AtomicLoadOp::new(ctx, p, i32_ty, AtomicOrderingAttr::Acquire, None);
+        let atomic_load = AtomicLoadOp::new(
+            ctx,
+            p,
+            i32_ty,
+            AtomicOrderingAttr::Acquire,
+            SyncScopeAttr::System,
+        );
         atomic_load.set_alignment(ctx, 4);
         atomic_load
     });
     func.push_no_result(ctx, |ctx| {
-        let atomic_store =
-            AtomicStoreOp::new(ctx, atomically_loaded, p, AtomicOrderingAttr::Release, None);
+        let atomic_store = AtomicStoreOp::new(
+            ctx,
+            atomically_loaded,
+            p,
+            AtomicOrderingAttr::Release,
+            SyncScopeAttr::System,
+        );
         atomic_store.set_alignment(ctx, 4);
         atomic_store
     });
@@ -515,7 +530,7 @@ fn constants() {
     let ptr_ty: TypeHandle = PointerType::get(ctx, 0).into();
     let func = TestFunc::new(ctx, vec![]);
 
-    let value: AttrObj = Box::new(int_attr(ctx, 32, 42));
+    let value = Box::new(int_attr(ctx, 32, 42));
     func.push(ctx, |ctx| ConstantOp::new(ctx, value));
     // MLIR has dedicated ops for these, rather than a constant attribute.
     func.push(ctx, |ctx| {
@@ -780,7 +795,11 @@ fn calls() {
     });
 
     func.push(ctx, |ctx| {
-        InlineAsmOp::new(ctx, i32_ty, vec![n], "nop", "=r,r", false)
+        let asm = InlineAsmOp::new(ctx, i32_ty, vec![n], "nop", "=r,r", false);
+        let mut attrs = LlvmAttributesAttr::new();
+        attrs.set("convergent", LlvmAttrValue::Unit);
+        asm.set_attr_llvm_inline_asm_attrs(ctx, attrs);
+        asm
     });
     func.push_no_result(ctx, |ctx| {
         InlineAsmOp::new(ctx, void_ty, vec![], "nop", "", true)
@@ -799,8 +818,8 @@ fn calls() {
                 %v4 = "llvm.call"(%v1) <{op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>, callee = @printf_like, var_callee_type = !llvm.func<i32 (!llvm.ptr, ...)>}> : (!llvm.ptr) -> (i32)
                 %v5 = "llvm.call"(%v1, %v0) <{op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (!llvm.ptr, i32) -> (i32)
                 %v6 = "llvm.call_intrinsic"(%v0, %v0) <{intrin = "llvm.smax.i32", op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i32, i32) -> (i32)
-                %v7 = "llvm.inline_asm"(%v0) <{asm_string = "nop", constraints = "=r,r"}> : (i32) -> (i32)
-                "llvm.inline_asm"() <{asm_string = "nop", constraints = ""}> {llvm_convergent = unit} : () -> ()
+                %v7 = "llvm.inline_asm"(%v0) <{asm_string = "nop", constraints = "=r,r"}> {llvm_convergent = unit} : (i32) -> (i32)
+                "llvm.inline_asm"() <{asm_string = "nop", constraints = "", has_side_effects = unit}> : () -> ()
                 %v9 = "llvm.va_arg"(%v1) : (!llvm.ptr) -> (i32)
                 "llvm.return"() : () -> ()
             }) : () -> ()
@@ -818,8 +837,8 @@ fn calls() {
             %1 = llvm.call @printf_like(%arg1) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
             %2 = llvm.call %arg1(%arg0) : !llvm.ptr, (i32) -> i32
             %3 = llvm.call_intrinsic "llvm.smax.i32"(%arg0, %arg0) : (i32, i32) -> i32
-            %4 = llvm.inline_asm "nop", "=r,r" %arg0 : (i32) -> i32
-            llvm.inline_asm {llvm_convergent} "nop", ""  : () -> ()
+            %4 = llvm.inline_asm {llvm_convergent} "nop", "=r,r" %arg0 : (i32) -> i32
+            llvm.inline_asm has_side_effects "nop", ""  : () -> ()
             %5 = llvm.va_arg %arg1 : (!llvm.ptr) -> i32
             llvm.return
           }

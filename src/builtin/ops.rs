@@ -44,7 +44,7 @@ impl ToMlirOp for ModuleOp {
 impl ToMlirOp for FuncOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let func_type = self
-            .get_attr_func_type(ctx)
+            .get_attr_builtin_func_type(ctx)
             .expect("FuncOp is missing its function type attribute");
         // A `func.func` with an empty body is a declaration, and MLIR does not
         // let a declaration keep the default (public) visibility.

@@ -8,7 +8,7 @@ use std::fmt;
 use pliron::{
     attribute::Attribute,
     builtin::{
-        attributes::{BoolAttr, IntegerAttr, TypeAttr, UnitAttr},
+        attributes::{BoolAttr, IntegerAttr, StringAttr, TypeAttr, UnitAttr},
         op_interfaces::{CallOpInterface, OperandSegmentInterface, SymbolOpInterface},
     },
     context::{Context, Ptr},
@@ -25,11 +25,11 @@ use pliron::{
 use pliron_llvm::{
     attributes::{
         AlignmentAttr, FastmathFlagsAttr, IntegerOverflowFlagsAttr, LinkageAttr, PoisonAttr,
-        UndefAttr, ZeroAttr,
+        SyncScopeAttr, UndefAttr, ZeroAttr,
     },
     op_interfaces::{
         ATTR_KEY_FAST_MATH_FLAGS, ATTR_KEY_INTEGER_OVERFLOW_FLAGS, ATTR_KEY_NNEG_FLAG,
-        AlignableOpInterface,
+        AlignableOpInterface, SyncScopeInterface,
     },
     ops::{
         AShrOp, AddOp, AddrSpaceCastOp, AddressOfOp, AllocaOp, AndOp, AtomicCmpxchgOp,
@@ -72,6 +72,14 @@ fn op_attr<A: Attribute + Clone>(op: Ptr<Operation>, ctx: &Context, key: &Identi
 /// MLIR's `alignment` property, which pliron leaves unset when it has none.
 fn alignment_attr(op: &impl AlignableOpInterface, ctx: &Context) -> Option<AlignmentAttr> {
     op.alignment(ctx).map(AlignmentAttr)
+}
+
+/// MLIR's `syncscope` property, which MLIR leaves unset for the system scope.
+fn syncscope_name(op: &impl SyncScopeInterface, ctx: &Context) -> Option<StringAttr> {
+    match op.syncscope(ctx) {
+        SyncScopeAttr::System => None,
+        scope => Some(StringAttr::new(scope.to_name())),
+    }
 }
 
 /// [alignment_attr], for the atomic accesses on which MLIR insists.
@@ -227,7 +235,7 @@ nneg_ops! {
 impl ToMlirOp for ICmpOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let pred = self
-            .get_attr_icmp_predicate(ctx)
+            .get_attr_llvm_icmp_predicate(ctx)
             .expect("ICmpOp is missing its predicate attribute");
         GenericOp::new(self.get_operation(), "llvm.icmp")
             .prop_attr("predicate", &*pred)
@@ -240,7 +248,7 @@ impl ToMlirOp for ICmpOp {
 impl ToMlirOp for FCmpOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let pred = self
-            .get_attr_fcmp_predicate(ctx)
+            .get_attr_llvm_fcmp_predicate(ctx)
             .expect("FCmpOp is missing its predicate attribute");
         let flags: Option<FastmathFlagsAttr> =
             op_attr(self.get_operation(), ctx, &ATTR_KEY_FAST_MATH_FLAGS);
@@ -267,7 +275,7 @@ impl ToMlirOp for SelectOp {
 impl ToMlirOp for AllocaOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let elem_type = self
-            .get_attr_alloca_element_type(ctx)
+            .get_attr_llvm_alloca_element_type(ctx)
             .expect("AllocaOp is missing its element type attribute");
         let alignment = alignment_attr(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.alloca")
@@ -282,10 +290,10 @@ impl ToMlirOp for AllocaOp {
 impl ToMlirOp for GetElementPtrOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let elem_type = self
-            .get_attr_gep_src_elem_type(ctx)
+            .get_attr_llvm_gep_src_elem_type(ctx)
             .expect("GetElementPtrOp is missing its source element type attribute");
         let indices = self
-            .get_attr_gep_indices(ctx)
+            .get_attr_llvm_gep_indices(ctx)
             .expect("GetElementPtrOp is missing its indices attribute");
         GenericOp::new(self.get_operation(), "llvm.getelementptr")
             .prop_attr("elem_type", &*elem_type)
@@ -323,11 +331,11 @@ impl ToMlirOp for AtomicLoadOp {
         let ordering = self
             .get_attr_llvm_ld_ordering(ctx)
             .expect("AtomicLoadOp is missing its ordering attribute");
-        let syncscope = self.get_attr_llvm_ld_syncscope(ctx);
+        let syncscope = syncscope_name(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.load")
             .prop_attr("alignment", &required_alignment(self, ctx)?)
             .prop_attr("ordering", &*ordering)
-            .prop_attr_opt("syncscope", syncscope.as_deref())
+            .prop_attr_opt("syncscope", syncscope.as_ref())
             .print(ctx, state, f)
     }
 }
@@ -339,11 +347,11 @@ impl ToMlirOp for AtomicStoreOp {
         let ordering = self
             .get_attr_llvm_st_ordering(ctx)
             .expect("AtomicStoreOp is missing its ordering attribute");
-        let syncscope = self.get_attr_llvm_st_syncscope(ctx);
+        let syncscope = syncscope_name(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.store")
             .prop_attr("alignment", &required_alignment(self, ctx)?)
             .prop_attr("ordering", &*ordering)
-            .prop_attr_opt("syncscope", syncscope.as_deref())
+            .prop_attr_opt("syncscope", syncscope.as_ref())
             .print(ctx, state, f)
     }
 }
@@ -358,11 +366,11 @@ impl ToMlirOp for AtomicRmwOp {
         let ordering = self
             .get_attr_llvm_rmw_ordering(ctx)
             .expect("AtomicRmwOp is missing its ordering attribute");
-        let syncscope = self.get_attr_llvm_rmw_syncscope(ctx);
+        let syncscope = syncscope_name(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.atomicrmw")
             .prop_attr("bin_op", &*kind)
             .prop_attr("ordering", &*ordering)
-            .prop_attr_opt("syncscope", syncscope.as_deref())
+            .prop_attr_opt("syncscope", syncscope.as_ref())
             .print(ctx, state, f)
     }
 }
@@ -377,11 +385,11 @@ impl ToMlirOp for AtomicCmpxchgOp {
         let failure = self
             .get_attr_llvm_cas_failure_ordering(ctx)
             .expect("AtomicCmpxchgOp is missing its failure ordering attribute");
-        let syncscope = self.get_attr_llvm_cas_syncscope(ctx);
+        let syncscope = syncscope_name(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.cmpxchg")
             .prop_attr("failure_ordering", &*failure)
             .prop_attr("success_ordering", &*success)
-            .prop_attr_opt("syncscope", syncscope.as_deref())
+            .prop_attr_opt("syncscope", syncscope.as_ref())
             .print(ctx, state, f)
     }
 }
@@ -393,10 +401,10 @@ impl ToMlirOp for FenceOp {
         let ordering = self
             .get_attr_llvm_fence_ordering(ctx)
             .expect("FenceOp is missing its ordering attribute");
-        let syncscope = self.get_attr_llvm_fence_syncscope(ctx);
+        let syncscope = syncscope_name(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.fence")
             .prop_attr("ordering", &*ordering)
-            .prop_attr_opt("syncscope", syncscope.as_deref())
+            .prop_attr_opt("syncscope", syncscope.as_ref())
             .print(ctx, state, f)
     }
 }
@@ -406,7 +414,7 @@ impl ToMlirOp for FenceOp {
 impl ToMlirOp for InsertValueOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let position = self
-            .get_attr_insert_value_indices(ctx)
+            .get_attr_llvm_insert_value_indices(ctx)
             .expect("InsertValueOp is missing its indices attribute");
         GenericOp::new(self.get_operation(), "llvm.insertvalue")
             .prop_attr("position", &*position)
@@ -419,7 +427,7 @@ impl ToMlirOp for InsertValueOp {
 impl ToMlirOp for ExtractValueOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let position = self
-            .get_attr_extract_value_indices(ctx)
+            .get_attr_llvm_extract_value_indices(ctx)
             .expect("ExtractValueOp is missing its indices attribute");
         GenericOp::new(self.get_operation(), "llvm.extractvalue")
             .prop_attr("position", &*position)
@@ -472,7 +480,7 @@ impl ToMlirOp for SwitchOp {
         // A switch with no cases has no `dense<>` element type to spell, and
         // MLIR leaves `case_values` off entirely.
         let case_values = self
-            .get_attr_switch_case_values(ctx)
+            .get_attr_llvm_switch_case_values(ctx)
             .filter(|values| !values.0.is_empty());
         GenericOp::new(self.get_operation(), "llvm.switch")
             .prop_raw("case_operand_segments", mlir_dense_array("i32", cases))
@@ -538,7 +546,7 @@ impl ToMlirOp for ConstantOp {
 impl ToMlirOp for AddressOfOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let global_name = self
-            .get_attr_global_name(ctx)
+            .get_attr_llvm_global_name(ctx)
             .expect("AddressOfOp is missing its global name attribute");
         GenericOp::new(self.get_operation(), "llvm.mlir.addressof")
             .prop_attr("global_name", &*global_name)
@@ -582,25 +590,31 @@ impl ToMlirOp for BlockAddressOp {
 
 /// `llvm.inline_asm`.
 ///
-/// pliron's `convergent` flag has no MLIR counterpart on this op,
-/// so it translates to a discardable attribute.
+/// A `convergent` entry in pliron's LLVM attributes has no MLIR counterpart
+/// on this op, so it translates to a discardable attribute.
 #[op_interface_impl]
 impl ToMlirOp for InlineAsmOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         let template = self
-            .get_attr_inline_asm_template(ctx)
+            .get_attr_llvm_inline_asm_template(ctx)
             .expect("InlineAsmOp is missing its template attribute");
         let constraints = self
-            .get_attr_inline_asm_constraints(ctx)
+            .get_attr_llvm_inline_asm_constraints(ctx)
             .expect("InlineAsmOp is missing its constraints attribute");
-        let convergent = self.get_attr_inline_asm_convergent(ctx);
+        let side_effects = self
+            .get_attr_llvm_inline_asm_side_effects(ctx)
+            .is_some_and(|side_effects| bool::from((*side_effects).clone()));
+        let convergent = self
+            .get_attr_llvm_inline_asm_attrs(ctx)
+            .is_some_and(|attrs| attrs.has("convergent"));
         let mut generic = GenericOp::new(self.get_operation(), "llvm.inline_asm")
             .results(non_void_results(self.get_operation(), ctx))
             .prop_raw("asm_string", mlir_string_literal(template.as_str()))
             .prop_raw("constraints", mlir_string_literal(constraints.as_str()));
-        if let Some(convergent) = &convergent
-            && bool::from((**convergent).clone())
-        {
+        if side_effects {
+            generic = generic.prop_raw("has_side_effects", "unit");
+        }
+        if convergent {
             generic = generic.attr_raw("llvm_convergent", "unit");
         }
         generic.print(ctx, state, f)
@@ -716,7 +730,7 @@ impl ToMlirOp for GlobalOp {
         let linkage = self
             .get_attr_llvm_global_linkage(ctx)
             .map_or(LinkageAttr::ExternalLinkage, |l| l.clone());
-        let initializer = self.get_attr_global_initializer(ctx);
+        let initializer = self.get_attr_llvm_global_initializer(ctx);
         let alignment = alignment_attr(self, ctx);
 
         let mut generic = GenericOp::new(self.get_operation(), "llvm.mlir.global")

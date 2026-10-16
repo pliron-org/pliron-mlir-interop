@@ -111,7 +111,7 @@ fn start_printing(state: &State, name: &Identifier) -> bool {
 fn done_printing(state: &State, name: &Identifier) {
     let mut aux_data = state.aux_data_mut();
     let in_printing = aux_data
-        .get_mut(&*STRUCT_IN_PRINTING)
+        .get_mut(&STRUCT_IN_PRINTING)
         .expect("struct-in-printing state must have been created by now")
         .downcast_mut::<Vec<Identifier>>()
         .expect("failed to downcast struct-in-printing state");

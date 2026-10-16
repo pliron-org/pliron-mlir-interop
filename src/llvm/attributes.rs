@@ -10,10 +10,10 @@ use pliron::{
     input_err_noloc, printable::State, result::Result,
 };
 use pliron_llvm::attributes::{
-    AddressSpaceAttr, AlignmentAttr, AtomicOrderingAttr, AtomicRmwKindAttr, CaseValuesAttr,
-    FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr, GepIndexAttr, GepIndicesAttr,
-    ICmpPredicateAttr, InsertExtractValueIndicesAttr, IntegerOverflowFlagsAttr, LinkageAttr,
-    PoisonAttr, ShuffleVectorMaskAttr, UndefAttr, ZeroAttr,
+    AddressSpaceAttr, AlignmentAttr, AtomicOrderingAttr, AtomicRmwKindAttr, BytesAttr,
+    CaseValuesAttr, FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr, GepIndexAttr,
+    GepIndicesAttr, ICmpPredicateAttr, InsertExtractValueIndicesAttr, IntegerOverflowFlagsAttr,
+    LinkageAttr, PoisonAttr, ShuffleVectorMaskAttr, UndefAttr, ZeroAttr,
 };
 
 use crate::{
@@ -280,6 +280,17 @@ impl ToMlirAttr for CaseValuesAttr {
         write!(f, "dense<[{values}]> : vector<{}x", self.0.len())?;
         print_type(ctx, ty.into(), state, f)?;
         write!(f, ">")?;
+        Ok(())
+    }
+}
+
+/// `array<i8: ...>`, MLIR's `DenseI8ArrayAttr`.
+#[attr_interface_impl]
+impl ToMlirAttr for BytesAttr {
+    fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
+        // MLIR's i8 array elements are signed, so reinterpret each byte.
+        let elems = self.as_ref().iter().map(|b| *b as i8);
+        write!(f, "{}", mlir_dense_array("i8", elems))?;
         Ok(())
     }
 }

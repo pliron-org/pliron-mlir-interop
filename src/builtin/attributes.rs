@@ -7,8 +7,8 @@ use std::fmt;
 
 use pliron::{
     builtin::attributes::{
-        BoolAttr, BytesAttr, DictAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IdentifierAttr,
-        IntegerAttr, OperandSegmentSizesAttr, StringAttr, TypeAttr, UnitAttr, VecAttr,
+        BoolAttr, DictAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IdentifierAttr, IntegerAttr,
+        OperandSegmentSizesAttr, StringAttr, TypeAttr, UnitAttr, VecAttr,
     },
     builtin::types::Signedness,
     context::Context,
@@ -43,17 +43,6 @@ impl ToMlirAttr for IdentifierAttr {
 impl ToMlirAttr for StringAttr {
     fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         write!(f, "{}", mlir_string_literal(self.as_str()))?;
-        Ok(())
-    }
-}
-
-/// `array<i8: ...>`, MLIR's `DenseI8ArrayAttr`.
-#[attr_interface_impl]
-impl ToMlirAttr for BytesAttr {
-    fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
-        // MLIR's i8 array elements are signed, so reinterpret each byte.
-        let elems = self.as_ref().iter().map(|b| *b as i8);
-        write!(f, "{}", mlir_dense_array("i8", elems))?;
         Ok(())
     }
 }

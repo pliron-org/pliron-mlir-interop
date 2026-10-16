@@ -13,7 +13,6 @@ use pliron::{
     context::{Context, Ptr},
     input_err, input_err_noloc,
     linked_list::ContainsLinkedList,
-    location::Located,
     op::op_cast,
     operation::Operation,
     printable::State,
@@ -36,9 +35,8 @@ pub fn print_op(
 ) -> Result<()> {
     let op_obj = Operation::get_op_dyn(op, ctx);
     let Some(conv) = op_cast::<dyn ToMlirOp>(op_obj.as_ref()) else {
-        let loc = op.deref(ctx).loc();
         return input_err!(
-            loc,
+            op.deref(ctx).loc().clone(),
             Error::MissingOpTranslation(op_obj.get_opid().to_string())
         );
     };
@@ -325,7 +323,7 @@ pub fn print_generic_op(
         .attributes
         .0
         .iter()
-        .filter(|(key, _)| **key != *ATTR_KEY_GIVEN_NAMES)
+        .filter(|(key, _)| **key != ATTR_KEY_GIVEN_NAMES)
     {
         generic = generic.attr_attr(key.as_ref(), &**val);
     }
@@ -342,12 +340,13 @@ fn print_region(
     f: &mut fmt::Formatter<'_>,
 ) -> Result<()> {
     write!(f, "{{")?;
-    state.push_indent();
-    for block in region.deref(ctx).iter(ctx) {
-        print_newline_indent(state, f)?;
-        print_block(ctx, block, state, f)?;
+    {
+        let _indent = state.indent();
+        for block in region.deref(ctx).iter(ctx) {
+            print_newline_indent(state, f)?;
+            print_block(ctx, block, state, f)?;
+        }
     }
-    state.pop_indent();
     print_newline_indent(state, f)?;
     write!(f, "}}")?;
     Ok(())
@@ -377,12 +376,11 @@ fn print_block(
         write!(f, ":")?;
     }
 
-    state.push_indent();
+    let _indent = state.indent();
     for op in block.deref(ctx).iter(ctx) {
         print_newline_indent(state, f)?;
         print_op(ctx, op, state, f)?;
     }
-    state.pop_indent();
     Ok(())
 }
 

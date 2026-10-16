@@ -13,7 +13,7 @@ use pliron::{
     basic_block::BasicBlock,
     builtin::{
         attributes::{
-            BoolAttr, BytesAttr, DictAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IdentifierAttr,
+            BoolAttr, DictAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IdentifierAttr,
             IntegerAttr, OperandSegmentSizesAttr, StringAttr, TypeAttr, UnitAttr, VecAttr,
         },
         op_interfaces::{OneResultInterface, SingleBlockRegionInterface},
@@ -95,7 +95,6 @@ fn attributes() {
         Box::new(StringAttr::new(
             "hello \"world\"\n\tand a \\ and \u{e9}".to_string(),
         )),
-        Box::new(BytesAttr::new(vec![0, 1, 255])),
         Box::new(BoolAttr::new(true)),
         Box::new(BoolAttr::new(false)),
         Box::new(IntegerAttr::new(i32_int, APInt::from_u64(42, bw32))),
@@ -128,7 +127,6 @@ fn attributes() {
     expect![[r#"
         @some_symbol
         "hello \"world\"\n\tand a \\ and \C3\A9"
-        array<i8: 0, 1, -1>
         true
         false
         42 : i32
