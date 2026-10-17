@@ -9,13 +9,22 @@ Design Goal: The target IR is textual.
 
 ## Pliron -> MLIR
 
-Translation is driven by the interfaces `ToMlirOp`, `ToMlirType` or `ToMlirAttr`.
-respectively. `MlirPrinter` is the entry point, and implements `Display`.
+Translation is driven by the interfaces `ToMlirOp`, `ToMlirType` and `ToMlirAttr`.
+`MlirPrinter` is the entry point, and implements `Display`.
 See the [crate docs](https://pliron-org.github.io/pliron-mlir-interop/pliron_mlir_interop/)
 for more information.
 
 Translations for pliron's `builtin` and `LLVM` dialects are provided.
 Other dialects must implement translations using the above interfaces.
+
+A typical translation looks like this:
+
+```rust
+use pliron_mlir_interop::{MlirPrinter, llvm::lowering::lower_for_mlir};
+
+lower_for_mlir(ctx, module.get_operation())?;
+let mlir = String::try_from(MlirPrinter::new(ctx, &module.get_operation()))?;
+```
 
 Current translations target MLIR-23.
 

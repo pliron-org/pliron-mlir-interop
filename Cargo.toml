@@ -10,11 +10,9 @@ categories = ["compilers"]
 keywords = ["pliron", "mlir", "interop", "compiler"]
 
 [dependencies]
-pliron = { git = "https://github.com/pliron-org/pliron.git" }
-pliron-llvm = { git = "https://github.com/pliron-org/pliron.git", default-features = false, features = ["std"] }
+pliron = "0.20.0"
+pliron-llvm = { version = "0.20.0", default-features = false, features = ["std"] }
 thiserror = "2"
-log = { version = "0" }
 
 [dev-dependencies]
 expect-test = "1"
-env_logger = "0"
