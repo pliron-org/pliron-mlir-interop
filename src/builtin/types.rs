@@ -7,7 +7,9 @@ use std::fmt;
 
 use pliron::{
     builtin::type_interfaces::FunctionTypeInterface,
-    builtin::types::{FP16Type, FP32Type, FP64Type, FunctionType, IntegerType, Signedness},
+    builtin::types::{
+        BF16Type, FP16Type, FP32Type, FP64Type, FunctionType, IntegerType, Signedness,
+    },
     context::Context,
     derive::type_interface_impl,
     printable::State,
@@ -49,6 +51,15 @@ impl ToMlirType for FunctionType {
 impl ToMlirType for FP16Type {
     fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         write!(f, "f16")?;
+        Ok(())
+    }
+}
+
+/// `bf16`.
+#[type_interface_impl]
+impl ToMlirType for BF16Type {
+    fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
+        write!(f, "bf16")?;
         Ok(())
     }
 }

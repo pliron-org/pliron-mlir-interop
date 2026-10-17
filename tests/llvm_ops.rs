@@ -19,8 +19,10 @@ use pliron::{
         ops::ModuleOp,
         types::{FP32Type, IntegerType, Signedness},
     },
+    combine::stream::position::SourcePosition,
     context::{Context, Ptr},
     linked_list::ContainsLinkedList,
+    location::{Location, Source},
     op::{Op, op_impls},
     operation::Operation,
     region::Region,
@@ -30,13 +32,14 @@ use pliron::{
 };
 use pliron_llvm::{
     attributes::{
-        AtomicOrderingAttr, AtomicRmwKindAttr, FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr,
-        ICmpPredicateAttr, IntegerOverflowFlagsAttr, LinkageAttr, SyncScopeAttr,
+        AggregateAttr, AtomicOrderingAttr, AtomicRmwKindAttr, FCmpPredicateAttr, FastmathFlags,
+        FastmathFlagsAttr, GepNoWrapFlags, GepNoWrapFlagsAttr, ICmpPredicateAttr,
+        IntegerOverflowFlagsAttr, LinkageAttr, SplatAttr, SymbolAddrAttr, SyncScopeAttr,
     },
     llvm_attrs::{LlvmAttrValue, LlvmAttributesAttr},
     op_interfaces::{
         AlignableOpInterface, BinArithOp, CastOpInterface, CastOpWithNNegInterface,
-        FloatBinArithOpWithFastMathFlags, IntBinArithOpWithOverflowFlag,
+        FloatBinArithOpWithFastMathFlags, IntBinArithOpWithOverflowFlag, VolatilityOpInterface,
     },
     ops::{
         AShrOp, AddOp, AddrSpaceCastOp, AddressOfOp, AllocaOp, AndOp, AtomicCmpxchgOp,
@@ -50,9 +53,12 @@ use pliron_llvm::{
         UndefOp, UnreachableOp, VAArgOp, XorOp, ZExtOp, ZeroOp,
     },
     types::{
-        FuncType, PointerType, StructLayout, StructType, VectorType, VectorTypeKind, VoidType,
+        ArrayType, FuncType, PointerType, StructLayout, StructType, VectorType, VectorTypeKind,
+        VoidType,
     },
 };
+
+use pliron_mlir_interop::llvm::lowering::lower_for_mlir;
 
 /// An `llvm.func` under construction, in a module of its own.
 ///
@@ -795,11 +801,7 @@ fn calls() {
     });
 
     func.push(ctx, |ctx| {
-        let asm = InlineAsmOp::new(ctx, i32_ty, vec![n], "nop", "=r,r", false);
-        let mut attrs = LlvmAttributesAttr::new();
-        attrs.set("convergent", LlvmAttrValue::Unit);
-        asm.set_attr_llvm_inline_asm_attrs(ctx, attrs);
-        asm
+        InlineAsmOp::new(ctx, i32_ty, vec![n], "nop", "=r,r", false)
     });
     func.push_no_result(ctx, |ctx| {
         InlineAsmOp::new(ctx, void_ty, vec![], "nop", "", true)
@@ -818,7 +820,7 @@ fn calls() {
                 %v4 = "llvm.call"(%v1) <{op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>, callee = @printf_like, var_callee_type = !llvm.func<i32 (!llvm.ptr, ...)>}> : (!llvm.ptr) -> (i32)
                 %v5 = "llvm.call"(%v1, %v0) <{op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (!llvm.ptr, i32) -> (i32)
                 %v6 = "llvm.call_intrinsic"(%v0, %v0) <{intrin = "llvm.smax.i32", op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i32, i32) -> (i32)
-                %v7 = "llvm.inline_asm"(%v0) <{asm_string = "nop", constraints = "=r,r"}> {llvm_convergent = unit} : (i32) -> (i32)
+                %v7 = "llvm.inline_asm"(%v0) <{asm_string = "nop", constraints = "=r,r"}> : (i32) -> (i32)
                 "llvm.inline_asm"() <{asm_string = "nop", constraints = "", has_side_effects = unit}> : () -> ()
                 %v9 = "llvm.va_arg"(%v1) : (!llvm.ptr) -> (i32)
                 "llvm.return"() : () -> ()
@@ -830,24 +832,24 @@ fn calls() {
     common::expect_mlir_opt_output(
         &printed,
         expect![[r#"
-        module @m {
-          llvm.func @f(%arg0: i32, %arg1: !llvm.ptr) {
-            %0 = llvm.call @takes_i32(%arg0) : (i32) -> i32
-            llvm.call @returns_nothing(%arg0) : (i32) -> ()
-            %1 = llvm.call @printf_like(%arg1) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
-            %2 = llvm.call %arg1(%arg0) : !llvm.ptr, (i32) -> i32
-            %3 = llvm.call_intrinsic "llvm.smax.i32"(%arg0, %arg0) : (i32, i32) -> i32
-            %4 = llvm.inline_asm {llvm_convergent} "nop", "=r,r" %arg0 : (i32) -> i32
-            llvm.inline_asm has_side_effects "nop", ""  : () -> ()
-            %5 = llvm.va_arg %arg1 : (!llvm.ptr) -> i32
-            llvm.return
-          }
-          llvm.func @takes_i32(i32) -> i32
-          llvm.func @returns_nothing(i32)
-          llvm.func @printf_like(!llvm.ptr, ...) -> i32
-        }
+            module @m {
+              llvm.func @f(%arg0: i32, %arg1: !llvm.ptr) {
+                %0 = llvm.call @takes_i32(%arg0) : (i32) -> i32
+                llvm.call @returns_nothing(%arg0) : (i32) -> ()
+                %1 = llvm.call @printf_like(%arg1) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr) -> i32
+                %2 = llvm.call %arg1(%arg0) : !llvm.ptr, (i32) -> i32
+                %3 = llvm.call_intrinsic "llvm.smax.i32"(%arg0, %arg0) : (i32, i32) -> i32
+                %4 = llvm.inline_asm "nop", "=r,r" %arg0 : (i32) -> i32
+                llvm.inline_asm has_side_effects "nop", ""  : () -> ()
+                %5 = llvm.va_arg %arg1 : (!llvm.ptr) -> i32
+                llvm.return
+              }
+              llvm.func @takes_i32(i32) -> i32
+              llvm.func @returns_nothing(i32)
+              llvm.func @printf_like(!llvm.ptr, ...) -> i32
+            }
 
-    "#]],
+        "#]],
     );
 }
 
@@ -950,6 +952,447 @@ fn function_declaration() {
         expect![[r#"
         module @m {
           llvm.func extern_weak @declared(i32) -> i32
+        }
+
+    "#]],
+    );
+}
+
+/// Check that volatile loads and stores set MLIR's `volatile_` property, and
+/// that GEP no-wrap flags become MLIR's `noWrapFlags` property.
+#[test]
+fn volatile_and_gep_flags() {
+    let ctx = &mut Context::new();
+    let i32_ty = int_ty(ctx, 32);
+    let ptr_ty: TypeHandle = PointerType::get(ctx, 0).into();
+    let func = TestFunc::new(ctx, vec![i32_ty, ptr_ty]);
+    let (n, p) = (func.arg(ctx, 0), func.arg(ctx, 1));
+
+    let loaded = func.push(ctx, |ctx| {
+        let load = LoadOp::new(ctx, p, i32_ty);
+        load.set_volatile(ctx, true);
+        load
+    });
+    func.push_no_result(ctx, |ctx| {
+        let store = StoreOp::new(ctx, loaded, p);
+        store.set_volatile(ctx, true);
+        store
+    });
+    func.push(ctx, |ctx| {
+        let gep = GetElementPtrOp::new(ctx, p, vec![GepIndex::Value(n)], i32_ty);
+        gep.set_attr_llvm_gep_no_wrap_flags(
+            ctx,
+            GepNoWrapFlagsAttr::from(GepNoWrapFlags::INBOUNDS | GepNoWrapFlags::NUW),
+        );
+        gep
+    });
+
+    let printed = func.finish(ctx);
+    expect![[r#"
+        "builtin.module"() <{sym_name = "m"}> ({
+          ^block1v1:
+            "llvm.func"() <{function_type = !llvm.func<!llvm.void (i32, !llvm.ptr)>, linkage = #llvm.linkage<external>, sym_name = "f"}> ({
+              ^entry_block2v1(%v0: i32, %v1: !llvm.ptr):
+                %v2 = "llvm.load"(%v1) <{volatile_ = unit}> : (!llvm.ptr) -> (i32)
+                "llvm.store"(%v2, %v1) <{volatile_ = unit}> : (i32, !llvm.ptr) -> ()
+                %v3 = "llvm.getelementptr"(%v1, %v0) <{elem_type = i32, noWrapFlags = 7 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i32) -> (!llvm.ptr)
+                "llvm.return"() : () -> ()
+            }) : () -> ()
+        }) : () -> ()"#]].assert_eq(&printed);
+    common::expect_mlir_opt_output(
+        &printed,
+        expect![[r#"
+        module @m {
+          llvm.func @f(%arg0: i32, %arg1: !llvm.ptr) {
+            %0 = llvm.load volatile %arg1 : !llvm.ptr -> i32
+            llvm.store volatile %0, %arg1 : i32, !llvm.ptr
+            %1 = llvm.getelementptr inbounds|nuw %arg1[%arg0] : (!llvm.ptr, i32) -> !llvm.ptr, i32
+            llvm.return
+          }
+        }
+
+    "#]],
+    );
+}
+
+/// Check that `lower_for_mlir` replaces a constant with no MLIR attribute with
+/// the operations that build it, and that the result of the last operation
+/// takes the place of the constant.
+#[test]
+fn aggregate_constants() {
+    let ctx = &mut Context::new();
+    let i32_ty = int_ty(ctx, 32);
+    let ptr_ty = PointerType::get(ctx, 0);
+    let func = TestFunc::new(ctx, vec![]);
+
+    let global = GlobalOp::new(ctx, "g".try_into().unwrap(), i32_ty);
+    func.module.append_operation(ctx, global.get_operation(), 0);
+    let g_addr = || SymbolAddrAttr::new("g".try_into().unwrap(), ptr_ty);
+
+    // An array of integers is a single `dense` constant.
+    let array_ty = ArrayType::get(ctx, i32_ty, 2).into();
+    let array = AggregateAttr::new(
+        vec![
+            Box::new(int_attr(ctx, 32, 1)),
+            Box::new(int_attr(ctx, 32, 2)),
+        ],
+        array_ty,
+    );
+    func.push(ctx, |ctx| ConstantOp::new(ctx, Box::new(array)));
+
+    // A struct is built field by field.
+    let pair_ty =
+        StructType::get_unnamed(ctx, (vec![i32_ty, ptr_ty.into()], StructLayout::Unpacked)).into();
+    let pair = AggregateAttr::new(
+        vec![Box::new(int_attr(ctx, 32, 7)), Box::new(g_addr())],
+        pair_ty,
+    );
+    func.push(ctx, |ctx| ConstantOp::new(ctx, Box::new(pair)));
+
+    // A splat of a pointer is built element by element, from a single address.
+    let ptr_vec = VectorType::get(ctx, ptr_ty.into(), 2, VectorTypeKind::Fixed);
+    let splat = SplatAttr::new(Box::new(g_addr()), ptr_vec);
+    func.push(ctx, |ctx| ConstantOp::new(ctx, Box::new(splat)));
+
+    // A vector with a poison element is not `dense`.
+    let i32_vec = VectorType::get(ctx, i32_ty, 2, VectorTypeKind::Fixed);
+    let partly_poison = AggregateAttr::new(
+        vec![
+            Box::new(int_attr(ctx, 32, 1)),
+            Box::new(pliron_llvm::attributes::PoisonAttr(i32_ty)),
+        ],
+        i32_vec.into(),
+    );
+    func.push(ctx, |ctx| ConstantOp::new(ctx, Box::new(partly_poison)));
+
+    // The address of a symbol is a single `llvm.mlir.addressof`.
+    func.push(ctx, |ctx| ConstantOp::new(ctx, Box::new(g_addr())));
+
+    lower_for_mlir(ctx, func.module.get_operation()).unwrap();
+    let printed = func.finish(ctx);
+    expect![[r#"
+        "builtin.module"() <{sym_name = "m"}> ({
+          ^block1v1:
+            "llvm.func"() <{function_type = !llvm.func<!llvm.void ()>, linkage = #llvm.linkage<external>, sym_name = "f"}> ({
+              ^entry_block2v1:
+                %v0 = "llvm.mlir.constant"() <{value = dense<[1, 2]> : tensor<2xi32>}> : () -> (!llvm.array<2 x i32>)
+                %v5 = "llvm.mlir.constant"() <{value = 7 : i32}> : () -> (i32)
+                %v6 = "llvm.mlir.addressof"() <{global_name = @g}> : () -> (!llvm.ptr)
+                %v7 = "llvm.mlir.undef"() : () -> (!llvm.struct<(i32, !llvm.ptr)>)
+                %v8 = "llvm.insertvalue"(%v7, %v5) <{position = array<i64: 0>}> : (!llvm.struct<(i32, !llvm.ptr)>, i32) -> (!llvm.struct<(i32, !llvm.ptr)>)
+                %v9 = "llvm.insertvalue"(%v8, %v6) <{position = array<i64: 1>}> : (!llvm.struct<(i32, !llvm.ptr)>, !llvm.ptr) -> (!llvm.struct<(i32, !llvm.ptr)>)
+                %v10 = "llvm.mlir.addressof"() <{global_name = @g}> : () -> (!llvm.ptr)
+                %v11 = "llvm.mlir.undef"() : () -> (vector<2 x !llvm.ptr>)
+                %v12 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> (i64)
+                %v13 = "llvm.insertelement"(%v11, %v10, %v12) : (vector<2 x !llvm.ptr>, !llvm.ptr, i64) -> (vector<2 x !llvm.ptr>)
+                %v14 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> (i64)
+                %v15 = "llvm.insertelement"(%v13, %v10, %v14) : (vector<2 x !llvm.ptr>, !llvm.ptr, i64) -> (vector<2 x !llvm.ptr>)
+                %v16 = "llvm.mlir.constant"() <{value = 1 : i32}> : () -> (i32)
+                %v17 = "llvm.mlir.poison"() : () -> (i32)
+                %v18 = "llvm.mlir.undef"() : () -> (vector<2 x i32>)
+                %v19 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> (i64)
+                %v20 = "llvm.insertelement"(%v18, %v16, %v19) : (vector<2 x i32>, i32, i64) -> (vector<2 x i32>)
+                %v21 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> (i64)
+                %v22 = "llvm.insertelement"(%v20, %v17, %v21) : (vector<2 x i32>, i32, i64) -> (vector<2 x i32>)
+                %v4 = "llvm.mlir.addressof"() <{global_name = @g}> : () -> (!llvm.ptr)
+                "llvm.return"() : () -> ()
+            }) : () -> ()
+            "llvm.mlir.global"() <{addr_space = 0 : i32, global_type = i32, linkage = #llvm.linkage<external>, sym_name = "g"}> ({}) : () -> ()
+        }) : () -> ()"#]].assert_eq(&printed);
+    common::expect_mlir_opt_output(
+        &printed,
+        expect![[r#"
+        module @m {
+          llvm.func @f() {
+            %0 = llvm.mlir.constant(dense<[1, 2]> : tensor<2xi32>) : !llvm.array<2 x i32>
+            %1 = llvm.mlir.constant(7 : i32) : i32
+            %2 = llvm.mlir.addressof @g : !llvm.ptr
+            %3 = llvm.mlir.undef : !llvm.struct<(i32, ptr)>
+            %4 = llvm.insertvalue %1, %3[0] : !llvm.struct<(i32, ptr)> 
+            %5 = llvm.insertvalue %2, %4[1] : !llvm.struct<(i32, ptr)> 
+            %6 = llvm.mlir.addressof @g : !llvm.ptr
+            %7 = llvm.mlir.undef : vector<2x!llvm.ptr>
+            %8 = llvm.mlir.constant(0 : i64) : i64
+            %9 = llvm.insertelement %6, %7[%8 : i64] : vector<2x!llvm.ptr>
+            %10 = llvm.mlir.constant(1 : i64) : i64
+            %11 = llvm.insertelement %6, %9[%10 : i64] : vector<2x!llvm.ptr>
+            %12 = llvm.mlir.constant(1 : i32) : i32
+            %13 = llvm.mlir.poison : i32
+            %14 = llvm.mlir.undef : vector<2xi32>
+            %15 = llvm.mlir.constant(0 : i64) : i64
+            %16 = llvm.insertelement %12, %14[%15 : i64] : vector<2xi32>
+            %17 = llvm.mlir.constant(1 : i64) : i64
+            %18 = llvm.insertelement %13, %16[%17 : i64] : vector<2xi32>
+            %19 = llvm.mlir.addressof @g : !llvm.ptr
+            llvm.return
+          }
+          llvm.mlir.global external @g() {addr_space = 0 : i32} : i32
+        }
+
+    "#]],
+    );
+}
+
+/// Check that `lower_for_mlir` moves a global initializer with no MLIR
+/// attribute to the initializer region, as the operations that build it.
+#[test]
+fn global_initializers() {
+    let ctx = &mut Context::new();
+    let i32_ty = int_ty(ctx, 32);
+    let ptr_ty = PointerType::get(ctx, 0);
+    let module = ModuleOp::new(ctx, "m".try_into().unwrap());
+
+    // A constant array of integers stays the `value` of the global.
+    let array_ty: TypeHandle = ArrayType::get(ctx, i32_ty, 2).into();
+    let table = GlobalOp::new(ctx, "table".try_into().unwrap(), array_ty);
+    table.set_constant(ctx, true);
+    table.set_initializer_value(
+        ctx,
+        Box::new(AggregateAttr::new(
+            vec![
+                Box::new(int_attr(ctx, 32, 1)),
+                Box::new(int_attr(ctx, 32, 2)),
+            ],
+            array_ty,
+        )),
+    );
+    module.append_operation(ctx, table.get_operation(), 0);
+
+    // A struct with the address of a symbol needs operations.
+    let pair_ty: TypeHandle =
+        StructType::get_unnamed(ctx, (vec![i32_ty, ptr_ty.into()], StructLayout::Unpacked)).into();
+    let pair = GlobalOp::new(ctx, "pair".try_into().unwrap(), pair_ty);
+    pair.set_initializer_value(
+        ctx,
+        Box::new(AggregateAttr::new(
+            vec![
+                Box::new(int_attr(ctx, 32, 7)),
+                Box::new(SymbolAddrAttr::new("table".try_into().unwrap(), ptr_ty)),
+            ],
+            pair_ty,
+        )),
+    );
+    module.append_operation(ctx, pair.get_operation(), 0);
+
+    // MLIR's translation to LLVM-IR rejects `#llvm.poison` as the `value` of a global.
+    let poisoned = GlobalOp::new(ctx, "poisoned".try_into().unwrap(), i32_ty);
+    poisoned.set_initializer_value(ctx, Box::new(pliron_llvm::attributes::PoisonAttr(i32_ty)));
+    module.append_operation(ctx, poisoned.get_operation(), 0);
+
+    lower_for_mlir(ctx, module.get_operation()).unwrap();
+    let printed = common::to_mlir(ctx, &module.get_operation());
+    expect![[r#"
+        "builtin.module"() <{sym_name = "m"}> ({
+          ^block1v1:
+            "llvm.mlir.global"() <{addr_space = 0 : i32, global_type = !llvm.array<2 x i32>, linkage = #llvm.linkage<external>, sym_name = "table", constant = unit, value = dense<[1, 2]> : tensor<2xi32>}> ({}) : () -> ()
+            "llvm.mlir.global"() <{addr_space = 0 : i32, global_type = !llvm.struct<(i32, !llvm.ptr)>, linkage = #llvm.linkage<external>, sym_name = "pair"}> ({
+              ^entry_block2v1:
+                %v0 = "llvm.mlir.constant"() <{value = 7 : i32}> : () -> (i32)
+                %v1 = "llvm.mlir.addressof"() <{global_name = @table}> : () -> (!llvm.ptr)
+                %v2 = "llvm.mlir.undef"() : () -> (!llvm.struct<(i32, !llvm.ptr)>)
+                %v3 = "llvm.insertvalue"(%v2, %v0) <{position = array<i64: 0>}> : (!llvm.struct<(i32, !llvm.ptr)>, i32) -> (!llvm.struct<(i32, !llvm.ptr)>)
+                %v4 = "llvm.insertvalue"(%v3, %v1) <{position = array<i64: 1>}> : (!llvm.struct<(i32, !llvm.ptr)>, !llvm.ptr) -> (!llvm.struct<(i32, !llvm.ptr)>)
+                "llvm.return"(%v4) : (!llvm.struct<(i32, !llvm.ptr)>) -> ()
+            }) : () -> ()
+            "llvm.mlir.global"() <{addr_space = 0 : i32, global_type = i32, linkage = #llvm.linkage<external>, sym_name = "poisoned"}> ({
+              ^entry_block3v1:
+                %v5 = "llvm.mlir.poison"() : () -> (i32)
+                "llvm.return"(%v5) : (i32) -> ()
+            }) : () -> ()
+        }) : () -> ()"#]].assert_eq(&printed);
+    common::expect_mlir_opt_output(
+        &printed,
+        expect![[r#"
+        module @m {
+          llvm.mlir.global external constant @table(dense<[1, 2]> : tensor<2xi32>) {addr_space = 0 : i32} : !llvm.array<2 x i32>
+          llvm.mlir.global external @pair() {addr_space = 0 : i32} : !llvm.struct<(i32, ptr)> {
+            %0 = llvm.mlir.constant(7 : i32) : i32
+            %1 = llvm.mlir.addressof @table : !llvm.ptr
+            %2 = llvm.mlir.undef : !llvm.struct<(i32, ptr)>
+            %3 = llvm.insertvalue %0, %2[0] : !llvm.struct<(i32, ptr)> 
+            %4 = llvm.insertvalue %1, %3[1] : !llvm.struct<(i32, ptr)> 
+            llvm.return %4 : !llvm.struct<(i32, ptr)>
+          }
+          llvm.mlir.global external @poisoned() {addr_space = 0 : i32} : i32 {
+            %0 = llvm.mlir.poison : i32
+            llvm.return %0 : i32
+          }
+        }
+
+    "#]],
+    );
+}
+
+/// Check that LLVM function attributes become MLIR's properties: unit
+/// properties where MLIR has them, and otherwise `passthrough` on `llvm.func`,
+/// and `memory_effects`, `allocsize` or `default_func_attrs` on `llvm.call`.
+#[test]
+fn llvm_function_attributes() {
+    let ctx = &mut Context::new();
+    let i32_ty = int_ty(ctx, 32);
+    let func = TestFunc::new(ctx, vec![i32_ty]);
+    let n = func.arg(ctx, 0);
+
+    let mut func_attrs = LlvmAttributesAttr::new();
+    func_attrs.set("nounwind", LlvmAttrValue::Unit);
+    func_attrs.set("noinline", LlvmAttrValue::Unit);
+    func_attrs.set("optnone", LlvmAttrValue::Unit);
+    func_attrs.set("alignstack", LlvmAttrValue::Int(16));
+    func_attrs.set("target-cpu", LlvmAttrValue::Str("x86-64".to_string()));
+    func.func.set_attr_llvm_func_attrs(ctx, func_attrs);
+
+    // `builtin` is a unit property of `llvm.call` only.
+    let returns_i32 = FuncType::get(ctx, i32_ty, vec![i32_ty], false);
+    let callee = FuncOp::new(ctx, "callee".try_into().unwrap(), returns_i32);
+    func.module.append_operation(ctx, callee.get_operation(), 0);
+    func.push(ctx, |ctx| {
+        let call = CallOp::new(
+            ctx,
+            CallOpCallable::Direct("callee".try_into().unwrap()),
+            returns_i32,
+            vec![n],
+        );
+        let mut attrs = LlvmAttributesAttr::new();
+        attrs.set("nounwind", LlvmAttrValue::Unit);
+        attrs.set("builtin", LlvmAttrValue::Unit);
+        attrs.set("trap-func-name", LlvmAttrValue::Str("abort".to_string()));
+        // `memory(argmem: read, inaccessiblemem: write)` must become `memory_effects`.
+        attrs.set("memory", LlvmAttrValue::Int(0b10_01));
+        // `allocsize(0)`, with no number of elements argument, must become
+        // `allocsize = array<i32: 0>`.
+        attrs.set("allocsize", LlvmAttrValue::Int(u32::MAX as u64));
+        call.set_attr_llvm_call_attrs(ctx, attrs);
+        call
+    });
+
+    let printed = func.finish(ctx);
+    expect![[r#"
+        "builtin.module"() <{sym_name = "m"}> ({
+          ^block1v1:
+            "llvm.func"() <{function_type = !llvm.func<!llvm.void (i32)>, linkage = #llvm.linkage<external>, sym_name = "f", no_unwind = unit, no_inline = unit, optimize_none = unit, passthrough = [["alignstack", "16"], ["target-cpu", "x86-64"]]}> ({
+              ^entry_block2v1(%v0: i32):
+                %v1 = "llvm.call"(%v0) <{op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>, callee = @callee, no_unwind = unit, builtin = unit, memory_effects = #llvm.memory_effects<other = none, argMem = read, inaccessibleMem = write, errnoMem = none, targetMem0 = none, targetMem1 = none>, allocsize = array<i32: 0>, default_func_attrs = {"trap-func-name" = "abort"}}> : (i32) -> (i32)
+                "llvm.return"() : () -> ()
+            }) : () -> ()
+            "llvm.func"() <{function_type = !llvm.func<i32 (i32)>, linkage = #llvm.linkage<external>, sym_name = "callee"}> ({}) : () -> ()
+        }) : () -> ()"#]].assert_eq(&printed);
+    common::expect_mlir_opt_output(
+        &printed,
+        expect![[r#"
+            module @m {
+              llvm.func @f(%arg0: i32) attributes {no_inline, no_unwind, optimize_none, passthrough = [["alignstack", "16"], ["target-cpu", "x86-64"]]} {
+                %0 = llvm.call @callee(%arg0) {allocsize = array<i32: 0>, builtin, default_func_attrs = {"trap-func-name" = "abort"}, memory_effects = #llvm.memory_effects<other = none, argMem = read, inaccessibleMem = write, errnoMem = none, targetMem0 = none, targetMem1 = none>, no_unwind} : (i32) -> i32
+                llvm.return
+              }
+              llvm.func @callee(i32) -> i32
+            }
+
+        "#]],
+    );
+}
+
+/// Check that each kind of pliron location becomes the MLIR location of the
+/// same kind, and that the operations that `lower_for_mlir` builds for a
+/// constant have the location of the constant.
+#[test]
+fn locations() {
+    let ctx = &mut Context::new();
+    let i32_ty = int_ty(ctx, 32);
+    let ptr_ty = PointerType::get(ctx, 0);
+    let func = TestFunc::new(ctx, vec![i32_ty]);
+    let n = func.arg(ctx, 0);
+
+    let file = |ctx: &Context, name: &str, line, column| Location::SrcPos {
+        src: Source::new_from_file(ctx, name),
+        pos: SourcePosition { line, column },
+    };
+    let func_loc = file(ctx, "f.c", 1, 0);
+    func.func.get_operation().deref_mut(ctx).set_loc(func_loc);
+
+    let locs = vec![
+        file(ctx, "f.c", 2, 3),
+        Location::SrcPos {
+            src: Source::InMemory,
+            pos: SourcePosition { line: 4, column: 5 },
+        },
+        Location::CallSite {
+            callee: Box::new(file(ctx, "inlined.c", 10, 1)),
+            caller: Box::new(file(ctx, "f.c", 3, 7)),
+        },
+        Location::Named {
+            name: "named".to_string(),
+            child_loc: Box::new(file(ctx, "f.c", 5, 2)),
+        },
+        Location::Named {
+            name: "no child".to_string(),
+            child_loc: Box::new(Location::Unknown),
+        },
+        Location::Fused {
+            metadata: Some(Box::new(StringAttr::new("meta".to_string()))),
+            locations: vec![file(ctx, "f.c", 6, 1), Location::Unknown],
+        },
+    ];
+    for loc in locs {
+        let add = func.push(ctx, |ctx| AddOp::new(ctx, n, n));
+        add.defining_op().unwrap().deref_mut(ctx).set_loc(loc);
+    }
+
+    let pair_ty =
+        StructType::get_unnamed(ctx, (vec![i32_ty, ptr_ty.into()], StructLayout::Unpacked)).into();
+    let pair = AggregateAttr::new(
+        vec![
+            Box::new(int_attr(ctx, 32, 7)),
+            Box::new(SymbolAddrAttr::new("f".try_into().unwrap(), ptr_ty)),
+        ],
+        pair_ty,
+    );
+    let constant = func.push(ctx, |ctx| ConstantOp::new(ctx, Box::new(pair)));
+    let constant_loc = file(ctx, "f.c", 8, 9);
+    constant
+        .defining_op()
+        .unwrap()
+        .deref_mut(ctx)
+        .set_loc(constant_loc);
+
+    lower_for_mlir(ctx, func.module.get_operation()).unwrap();
+    let printed = func.finish(ctx);
+    expect![[r#"
+        "builtin.module"() <{sym_name = "m"}> ({
+          ^block1v1:
+            "llvm.func"() <{function_type = !llvm.func<!llvm.void (i32)>, linkage = #llvm.linkage<external>, sym_name = "f"}> ({
+              ^entry_block2v1(%v0: i32):
+                %v1 = "llvm.add"(%v0, %v0) : (i32, i32) -> (i32) loc("f.c":2:3)
+                %v2 = "llvm.add"(%v0, %v0) : (i32, i32) -> (i32) loc("<in-memory>":4:5)
+                %v3 = "llvm.add"(%v0, %v0) : (i32, i32) -> (i32) loc(callsite("inlined.c":10:1 at "f.c":3:7))
+                %v4 = "llvm.add"(%v0, %v0) : (i32, i32) -> (i32) loc("named"("f.c":5:2))
+                %v5 = "llvm.add"(%v0, %v0) : (i32, i32) -> (i32) loc("no child")
+                %v6 = "llvm.add"(%v0, %v0) : (i32, i32) -> (i32) loc(fused<"meta">["f.c":6:1, unknown])
+                %v8 = "llvm.mlir.constant"() <{value = 7 : i32}> : () -> (i32) loc("f.c":8:9)
+                %v9 = "llvm.mlir.addressof"() <{global_name = @f}> : () -> (!llvm.ptr) loc("f.c":8:9)
+                %v10 = "llvm.mlir.undef"() : () -> (!llvm.struct<(i32, !llvm.ptr)>) loc("f.c":8:9)
+                %v11 = "llvm.insertvalue"(%v10, %v8) <{position = array<i64: 0>}> : (!llvm.struct<(i32, !llvm.ptr)>, i32) -> (!llvm.struct<(i32, !llvm.ptr)>) loc("f.c":8:9)
+                %v12 = "llvm.insertvalue"(%v11, %v9) <{position = array<i64: 1>}> : (!llvm.struct<(i32, !llvm.ptr)>, !llvm.ptr) -> (!llvm.struct<(i32, !llvm.ptr)>) loc("f.c":8:9)
+                "llvm.return"() : () -> ()
+            }) : () -> () loc("f.c":1:0)
+        }) : () -> ()"#]].assert_eq(&printed);
+    common::expect_mlir_opt_output(
+        &printed,
+        expect![[r#"
+        module @m {
+          llvm.func @f(%arg0: i32) {
+            %0 = llvm.add %arg0, %arg0 : i32
+            %1 = llvm.add %arg0, %arg0 : i32
+            %2 = llvm.add %arg0, %arg0 : i32
+            %3 = llvm.add %arg0, %arg0 : i32
+            %4 = llvm.add %arg0, %arg0 : i32
+            %5 = llvm.add %arg0, %arg0 : i32
+            %6 = llvm.mlir.constant(7 : i32) : i32
+            %7 = llvm.mlir.addressof @f : !llvm.ptr
+            %8 = llvm.mlir.undef : !llvm.struct<(i32, ptr)>
+            %9 = llvm.insertvalue %6, %8[0] : !llvm.struct<(i32, ptr)> 
+            %10 = llvm.insertvalue %7, %9[1] : !llvm.struct<(i32, ptr)> 
+            llvm.return
+          }
         }
 
     "#]],

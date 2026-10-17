@@ -7,8 +7,8 @@ use std::fmt;
 
 use pliron::{
     builtin::attributes::{
-        BoolAttr, DictAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IdentifierAttr, IntegerAttr,
-        OperandSegmentSizesAttr, StringAttr, TypeAttr, UnitAttr, VecAttr,
+        BoolAttr, DictAttr, FPBFloatAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IdentifierAttr,
+        IntegerAttr, OperandSegmentSizesAttr, StringAttr, TypeAttr, UnitAttr, VecAttr,
     },
     builtin::types::Signedness,
     context::Context,
@@ -73,6 +73,15 @@ impl ToMlirAttr for IntegerAttr {
 impl ToMlirAttr for FPHalfAttr {
     fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
         write!(f, "{} : f16", mlir_hex_float(self.0.to_bits(), 16))?;
+        Ok(())
+    }
+}
+
+/// `0xHHHH : bf16`.
+#[attr_interface_impl]
+impl ToMlirAttr for FPBFloatAttr {
+    fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
+        write!(f, "{} : bf16", mlir_hex_float(self.0.to_bits(), 16))?;
         Ok(())
     }
 }

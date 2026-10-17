@@ -10,14 +10,16 @@ use pliron::{
     input_err_noloc, printable::State, result::Result,
 };
 use pliron_llvm::attributes::{
-    AddressSpaceAttr, AlignmentAttr, AtomicOrderingAttr, AtomicRmwKindAttr, BytesAttr,
-    CaseValuesAttr, FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr, GepIndexAttr,
-    GepIndicesAttr, ICmpPredicateAttr, InsertExtractValueIndicesAttr, IntegerOverflowFlagsAttr,
-    LinkageAttr, PoisonAttr, ShuffleVectorMaskAttr, UndefAttr, ZeroAttr,
+    AddressSpaceAttr, AggregateAttr, AlignmentAttr, AtomicOrderingAttr, AtomicRmwKindAttr,
+    BytesAttr, CaseValuesAttr, FCmpPredicateAttr, FastmathFlags, FastmathFlagsAttr, GepIndexAttr,
+    GepIndicesAttr, GepNoWrapFlagsAttr, ICmpPredicateAttr, InsertExtractValueIndicesAttr,
+    IntegerOverflowFlagsAttr, LinkageAttr, PoisonAttr, ShuffleVectorMaskAttr, SplatAttr, UndefAttr,
+    ZeroAttr,
 };
 
 use crate::{
     Error, ToMlirAttr,
+    llvm::constants::print_dense,
     printers::{mlir_dense_array, print_type},
 };
 
@@ -116,6 +118,17 @@ impl ToMlirAttr for IntegerOverflowFlagsAttr {
         } else {
             write!(f, "#llvm.overflow<{}>", flags.join(", "))?;
         }
+        Ok(())
+    }
+}
+
+/// The integer value of MLIR's `LLVM::GEPNoWrapFlags` bit enum.
+///
+/// pliron's normalized flags are the same as MLIR's.
+#[attr_interface_impl]
+impl ToMlirAttr for GepNoWrapFlagsAttr {
+    fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
+        write!(f, "{} : i32", self.0.normalized().bits())?;
         Ok(())
     }
 }
@@ -284,13 +297,31 @@ impl ToMlirAttr for CaseValuesAttr {
     }
 }
 
-/// `array<i8: ...>`, MLIR's `DenseI8ArrayAttr`.
-#[attr_interface_impl]
-impl ToMlirAttr for BytesAttr {
-    fn to_mlir(&self, _ctx: &Context, _state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
-        // MLIR's i8 array elements are signed, so reinterpret each byte.
-        let elems = self.as_ref().iter().map(|b| *b as i8);
-        write!(f, "{}", mlir_dense_array("i8", elems))?;
-        Ok(())
-    }
+/// `dense<...> : tensor<...>` or `dense<...> : vector<...>`, for the
+/// constants that MLIR holds in a dense elements attribute.
+///
+/// Fails for other constants (see [crate::llvm::constants]).
+macro_rules! dense_attrs {
+    ($($attr:ty),* $(,)?) => { $(
+        #[attr_interface_impl]
+        impl ToMlirAttr for $attr {
+            fn to_mlir(
+                &self,
+                ctx: &Context,
+                state: &State,
+                f: &mut fmt::Formatter<'_>,
+            ) -> Result<()> {
+                if !print_dense(ctx, self, state, f)? {
+                    return input_err_noloc!(Error::Untranslatable(format!(
+                        "constant `{}` has no MLIR attribute; \
+                         only `llvm.mlir.constant` and `llvm.mlir.global` can build it",
+                        pliron::attribute::Attribute::get_attr_id(self)
+                    )));
+                }
+                Ok(())
+            }
+        }
+    )* };
 }
+
+dense_attrs!(BytesAttr, AggregateAttr, SplatAttr);

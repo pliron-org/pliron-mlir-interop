@@ -13,17 +13,18 @@ use pliron::{
     basic_block::BasicBlock,
     builtin::{
         attributes::{
-            BoolAttr, DictAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr, IdentifierAttr,
-            IntegerAttr, OperandSegmentSizesAttr, StringAttr, TypeAttr, UnitAttr, VecAttr,
+            BoolAttr, DictAttr, FPBFloatAttr, FPDoubleAttr, FPHalfAttr, FPSingleAttr,
+            IdentifierAttr, IntegerAttr, OperandSegmentSizesAttr, StringAttr, TypeAttr, UnitAttr,
+            VecAttr,
         },
         op_interfaces::{OneResultInterface, SingleBlockRegionInterface},
         ops::{ConstantOp, FuncOp, ModuleOp},
-        types::{FP16Type, FP32Type, FP64Type, FunctionType, IntegerType, Signedness},
+        types::{BF16Type, FP16Type, FP32Type, FP64Type, FunctionType, IntegerType, Signedness},
     },
     context::Context,
     op::Op,
     r#type::TypeHandle,
-    utils::apfloat::{Double, Half, Single},
+    utils::apfloat::{BFloat, Double, Half, Single},
     utils::apint::APInt,
 };
 use pliron_llvm::ops::ReturnOp;
@@ -42,6 +43,7 @@ fn types() {
         IntegerType::get(ctx, 64, Signedness::Signed).into(),
         IntegerType::get(ctx, 8, Signedness::Unsigned).into(),
         FP16Type::get(ctx).into(),
+        BF16Type::get(ctx).into(),
         FP32Type::get(ctx).into(),
         FP64Type::get(ctx).into(),
     ];
@@ -53,6 +55,7 @@ fn types() {
         si64
         ui8
         f16
+        bf16
         f32
         f64"#]]
     .assert_eq(&printed.join("\n"));
@@ -100,6 +103,7 @@ fn attributes() {
         Box::new(IntegerAttr::new(i32_int, APInt::from_u64(42, bw32))),
         Box::new(IntegerAttr::new(si32_int, APInt::from_i64(-7, bw32))),
         Box::new(FPHalfAttr("1.5".parse::<Half>().unwrap())),
+        Box::new(FPBFloatAttr("-1.0".parse::<BFloat>().unwrap())),
         Box::new(FPSingleAttr("-2.25".parse::<Single>().unwrap())),
         Box::new(FPDoubleAttr(
             core::f64::consts::PI.to_string().parse::<Double>().unwrap(),
@@ -132,6 +136,7 @@ fn attributes() {
         42 : i32
         -7 : si32
         0x3E00 : f16
+        0xBF80 : bf16
         0xC0100000 : f32
         0x400921FB54442D18 : f64
         unit

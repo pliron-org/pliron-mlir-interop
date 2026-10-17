@@ -13,12 +13,14 @@ use pliron::{
     context::{Context, Ptr},
     input_err, input_err_noloc,
     linked_list::ContainsLinkedList,
+    location::{Location, Source},
     op::op_cast,
     operation::Operation,
     printable::State,
     region::Region,
     result::Result,
     r#type::{TypeHandle, Typed, type_cast},
+    uniqued_any,
     value::Value,
 };
 
@@ -206,6 +208,15 @@ impl<'a> GenericOp<'a> {
         self
     }
 
+    /// Add MLIR's `UnitAttr` to the properties dictionary when `set` is true.
+    pub fn prop_unit(self, name: &'a str, set: bool) -> Self {
+        if set {
+            self.prop_raw(name, "unit")
+        } else {
+            self
+        }
+    }
+
     /// Like [Self::prop_raw], but for an optional pliron attribute
     pub fn prop_raw_opt(self, name: &'a str, text: Option<impl Into<String>>) -> Self {
         match text {
@@ -295,8 +306,94 @@ impl<'a> GenericOp<'a> {
         print_type_list(ctx, results.iter().map(|res| res.get_type(ctx)), state, f)?;
         write!(f, ")")?;
 
-        Ok(())
+        print_op_location(ctx, operation.loc(), state, f)
     }
+}
+
+/// Print ` loc(...)` for an operation at `loc`, or nothing for an unknown `loc`.
+pub fn print_op_location(
+    ctx: &Context,
+    loc: &Location,
+    state: &State,
+    f: &mut fmt::Formatter<'_>,
+) -> Result<()> {
+    if loc.is_unknown() {
+        return Ok(());
+    }
+    write!(f, " loc(")?;
+    print_location(ctx, loc, state, f)?;
+    write!(f, ")")?;
+    Ok(())
+}
+
+/// Print `loc` as the body of an MLIR `loc(...)`.
+///
+/// | pliron | MLIR |
+/// |--------|------|
+/// | [Location::SrcPos] | `"file":line:column` |
+/// | [Location::Fused] | `fused<metadata>[loc, ...]` |
+/// | [Location::Named] | `"name"(loc)` |
+/// | [Location::CallSite] | `callsite(callee at caller)` |
+/// | [Location::Unknown] | `unknown` |
+pub fn print_location(
+    ctx: &Context,
+    loc: &Location,
+    state: &State,
+    f: &mut fmt::Formatter<'_>,
+) -> Result<()> {
+    match loc {
+        Location::SrcPos { src, pos } => {
+            let file = match src {
+                Source::File(path) => uniqued_any::get(ctx, *path).display().to_string(),
+                Source::InMemory => "<in-memory>".to_string(),
+            };
+            // MLIR's line and column numbers have no sign.
+            write!(
+                f,
+                "{}:{}:{}",
+                mlir_string_literal(&file),
+                pos.line.max(0),
+                pos.column.max(0)
+            )?;
+        }
+        Location::Fused {
+            metadata,
+            locations,
+        } => {
+            write!(f, "fused")?;
+            if let Some(metadata) = metadata {
+                write!(f, "<")?;
+                print_attr(ctx, &**metadata, state, f)?;
+                write!(f, ">")?;
+            }
+            write!(f, "[")?;
+            for (i, loc) in locations.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                print_location(ctx, loc, state, f)?;
+            }
+            write!(f, "]")?;
+        }
+        Location::Named { name, child_loc } => {
+            write!(f, "{}", mlir_string_literal(name))?;
+            // MLIR leaves the child off when it is unknown.
+            if !child_loc.is_unknown() {
+                write!(f, "(")?;
+                print_location(ctx, child_loc, state, f)?;
+                write!(f, ")")?;
+            }
+        }
+        Location::CallSite { callee, caller } => {
+            write!(f, "callsite(")?;
+            print_location(ctx, callee, state, f)?;
+            write!(f, " at ")?;
+            print_location(ctx, caller, state, f)?;
+            write!(f, ")")?;
+        }
+        Location::Unknown => write!(f, "unknown")?,
+    }
+    Ok(())
 }
 
 /// Print `op` using MLIR's generic operation syntax, forwarding every pliron

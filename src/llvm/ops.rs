@@ -25,11 +25,12 @@ use pliron::{
 use pliron_llvm::{
     attributes::{
         AlignmentAttr, FastmathFlagsAttr, IntegerOverflowFlagsAttr, LinkageAttr, PoisonAttr,
-        SyncScopeAttr, UndefAttr, ZeroAttr,
+        SymbolAddrAttr, SyncScopeAttr, UndefAttr, ZeroAttr,
     },
+    llvm_attrs::{LlvmAttrValue, LlvmAttributesAttr},
     op_interfaces::{
         ATTR_KEY_FAST_MATH_FLAGS, ATTR_KEY_INTEGER_OVERFLOW_FLAGS, ATTR_KEY_NNEG_FLAG,
-        AlignableOpInterface, SyncScopeInterface,
+        AlignableOpInterface, SyncScopeInterface, VolatilityOpInterface,
     },
     ops::{
         AShrOp, AddOp, AddrSpaceCastOp, AddressOfOp, AllocaOp, AndOp, AtomicCmpxchgOp,
@@ -47,6 +48,7 @@ use pliron_llvm::{
 
 use crate::{
     Error, ToMlirOp,
+    llvm::lowering::{constant_needs_lowering, global_initializer_needs_lowering},
     printers::{GenericOp, mlir_dense_array, mlir_string_literal},
 };
 
@@ -82,17 +84,183 @@ fn syncscope_name(op: &impl SyncScopeInterface, ctx: &Context) -> Option<StringA
     }
 }
 
+/// An [Error::Untranslatable] error at the location of `op`.
+fn untranslatable<T>(op: &impl Op, ctx: &Context, msg: impl Into<String>) -> Result<T> {
+    input_err!(op.loc(ctx), Error::Untranslatable(msg.into()))
+}
+
+/// The error for an `op` that needs
+/// [lower_for_mlir](crate::llvm::lowering::lower_for_mlir) before printing.
+fn lowering_err(op: &impl Op, ctx: &Context, what: &str) -> Result<()> {
+    untranslatable(
+        op,
+        ctx,
+        format!("{what} has no MLIR attribute; run `lower_for_mlir` before printing"),
+    )
+}
+
+/// Error: `name` (LLVM function attribute) cannot be held in `mnemonic` (op).
+fn fn_attr_err<T>(op: &impl Op, ctx: &Context, mnemonic: &str, name: &str) -> Result<T> {
+    untranslatable(
+        op,
+        ctx,
+        format!("MLIR's `{mnemonic}` cannot hold the LLVM function attribute `{name}`"),
+    )
+}
+
+/// The MLIR unit property of `llvm.call` (if `is_call`) or `llvm.func` for the
+/// LLVM function attribute `name`.
+fn unit_prop(name: &str, is_call: bool) -> Option<&'static str> {
+    Some(match name {
+        "alwaysinline" => "always_inline",
+        "cold" => "cold",
+        "convergent" => "convergent",
+        "hot" => "hot",
+        "inlinehint" => "inline_hint",
+        "minsize" => "minsize",
+        "no_caller_saved_registers" => "no_caller_saved_registers",
+        "nocallback" => "nocallback",
+        "noduplicate" => "noduplicate",
+        "noinline" => "no_inline",
+        "noreturn" => "noreturn",
+        "nounwind" => "no_unwind",
+        "optsize" => "optsize",
+        "returns_twice" => "returns_twice",
+        "save-reg-params" => "save_reg_params",
+        "willreturn" => "will_return",
+        "optnone" if !is_call => "optimize_none",
+        "builtin" if is_call => "builtin",
+        "nobuiltin" if is_call => "nobuiltin",
+        _ => return None,
+    })
+}
+
+/// Add the `llvm.func` properties for the LLVM function attributes `attrs`
+/// to `generic`.
+fn add_func_attrs<'a>(
+    mut generic: GenericOp<'a>,
+    op: &impl Op,
+    ctx: &Context,
+    attrs: Option<&LlvmAttributesAttr>,
+) -> Result<GenericOp<'a>> {
+    let mut passthrough = vec![];
+    for (name, value) in attrs.iter().flat_map(|attrs| attrs.iter()) {
+        let pair = |value: &str| {
+            format!(
+                "[{}, {}]",
+                mlir_string_literal(name),
+                mlir_string_literal(value)
+            )
+        };
+        passthrough.push(match (value, unit_prop(name, false)) {
+            (LlvmAttrValue::Unit, Some(mlir_name)) => {
+                generic = generic.prop_unit(mlir_name, true);
+                continue;
+            }
+            (LlvmAttrValue::Unit, None) => mlir_string_literal(name),
+            (LlvmAttrValue::Int(int), _) => pair(&int.to_string()),
+            (LlvmAttrValue::Str(str), _) => pair(str),
+            (LlvmAttrValue::Type(_), _) => return fn_attr_err(op, ctx, "llvm.func", name),
+        });
+    }
+    if !passthrough.is_empty() {
+        generic = generic.prop_raw("passthrough", format!("[{}]", passthrough.join(", ")));
+    }
+    Ok(generic)
+}
+
+/// Add the `llvm.call` properties for the LLVM function attributes `attrs`
+/// to `generic`.
+fn add_call_attrs<'a>(
+    mut generic: GenericOp<'a>,
+    op: &impl Op,
+    ctx: &Context,
+    attrs: Option<&LlvmAttributesAttr>,
+) -> Result<GenericOp<'a>> {
+    let mut default_func_attrs = vec![];
+    for (name, value) in attrs.iter().flat_map(|attrs| attrs.iter()) {
+        generic = match (value, unit_prop(name, true), name) {
+            (LlvmAttrValue::Unit, Some(mlir_name), _) => generic.prop_unit(mlir_name, true),
+            (LlvmAttrValue::Int(int), _, "memory") => {
+                generic.prop_raw("memory_effects", memory_effects(*int))
+            }
+            (LlvmAttrValue::Int(int), _, "allocsize") => {
+                generic.prop_raw("allocsize", allocsize(*int))
+            }
+            (LlvmAttrValue::Str(str), _, _) => {
+                default_func_attrs.push(format!(
+                    "{} = {}",
+                    mlir_string_literal(name),
+                    mlir_string_literal(str)
+                ));
+                generic
+            }
+            _ => return fn_attr_err(op, ctx, "llvm.call", name),
+        };
+    }
+    if !default_func_attrs.is_empty() {
+        generic = generic.prop_raw(
+            "default_func_attrs",
+            format!("{{{}}}", default_func_attrs.join(", ")),
+        );
+    }
+    Ok(generic)
+}
+
+/// Check that `op` has no LLVM function attributes in `attrs` and if it does, return an error.
+fn no_fn_attrs(
+    op: &impl Op,
+    ctx: &Context,
+    mnemonic: &str,
+    attrs: Option<&LlvmAttributesAttr>,
+) -> Result<()> {
+    match attrs.and_then(|attrs| attrs.iter().next()) {
+        Some((name, _)) => fn_attr_err(op, ctx, mnemonic, name),
+        None => Ok(()),
+    }
+}
+
+/// `#llvm.memory_effects<...>` for an LLVM `memory` attribute.
+///
+/// LLVM packs a two bit `ModRefInfo` for each location, in the order `argMem`,
+/// `inaccessibleMem`, `errnoMem`, `other`, `targetMem0`, `targetMem1`.
+fn memory_effects(value: u64) -> String {
+    const MOD_REF: [&str; 4] = ["none", "read", "write", "readwrite"];
+    let mode = |location: u32| MOD_REF[((value >> (2 * location)) & 3) as usize];
+    format!(
+        "#llvm.memory_effects<other = {}, argMem = {}, inaccessibleMem = {}, errnoMem = {}, \
+         targetMem0 = {}, targetMem1 = {}>",
+        mode(3),
+        mode(0),
+        mode(1),
+        mode(2),
+        mode(4),
+        mode(5)
+    )
+}
+
+/// `array<i32: ...>` for an LLVM `allocsize` attribute.
+///
+/// LLVM packs the element size argument in the high 32 bits, and the number
+/// of elements argument (`u32::MAX` when there is none) in the low 32 bits.
+fn allocsize(value: u64) -> String {
+    let elem_size = (value >> 32) as u32;
+    match value as u32 {
+        u32::MAX => mlir_dense_array("i32", [elem_size]),
+        num_elems => mlir_dense_array("i32", [elem_size, num_elems]),
+    }
+}
+
 /// [alignment_attr], for the atomic accesses on which MLIR insists.
 fn required_alignment(op: &impl AlignableOpInterface, ctx: &Context) -> Result<AlignmentAttr> {
-    let Some(alignment) = alignment_attr(op, ctx) else {
-        return input_err!(
-            op.loc(ctx),
-            Error::Untranslatable(
-                "MLIR requires an alignment on an atomic memory access".to_string()
-            )
-        );
-    };
-    Ok(alignment)
+    match alignment_attr(op, ctx) {
+        Some(alignment) => Ok(alignment),
+        None => untranslatable(
+            op,
+            ctx,
+            "MLIR requires an alignment on an atomic memory access",
+        ),
+    }
 }
 
 /// Ops that carry only their operands, results and successors.
@@ -295,8 +463,13 @@ impl ToMlirOp for GetElementPtrOp {
         let indices = self
             .get_attr_llvm_gep_indices(ctx)
             .expect("GetElementPtrOp is missing its indices attribute");
+        // MLIR leaves `noWrapFlags` off when no flag is set.
+        let no_wrap_flags = self
+            .get_attr_llvm_gep_no_wrap_flags(ctx)
+            .filter(|flags| !flags.0.is_empty());
         GenericOp::new(self.get_operation(), "llvm.getelementptr")
             .prop_attr("elem_type", &*elem_type)
+            .prop_attr_opt("noWrapFlags", no_wrap_flags.as_deref())
             .prop_attr("rawConstantIndices", &*indices)
             .print(ctx, state, f)
     }
@@ -309,6 +482,7 @@ impl ToMlirOp for LoadOp {
         let alignment = alignment_attr(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.load")
             .prop_attr_opt("alignment", alignment.as_ref())
+            .prop_unit("volatile_", self.is_volatile(ctx))
             .print(ctx, state, f)
     }
 }
@@ -320,6 +494,7 @@ impl ToMlirOp for StoreOp {
         let alignment = alignment_attr(self, ctx);
         GenericOp::new(self.get_operation(), "llvm.store")
             .prop_attr_opt("alignment", alignment.as_ref())
+            .prop_unit("volatile_", self.is_volatile(ctx))
             .print(ctx, state, f)
     }
 }
@@ -510,8 +685,11 @@ impl ToMlirOp for IndirectBrOp {
     }
 }
 
-/// `llvm.mlir.constant`, or the dedicated op for LLVM's non-constant-expression
-/// values (`llvm.mlir.zero` / `undef` / `poison`).
+/// One of:
+/// - `llvm.mlir.addressof`, for the address of a symbol.
+/// - `llvm.mlir.zero`, `llvm.mlir.undef` or `llvm.mlir.poison`, for LLVM's
+///   non-constant-expression values.
+/// - `llvm.mlir.constant`, for all other values.
 #[op_interface_impl]
 impl ToMlirOp for ConstantOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
@@ -519,6 +697,15 @@ impl ToMlirOp for ConstantOp {
             .get_attr_llvm_constant_value(ctx)
             .expect("ConstantOp is missing its value attribute");
         let value: &dyn Attribute = &**value;
+
+        if constant_needs_lowering(ctx, value) {
+            return lowering_err(self, ctx, "the value of this constant");
+        }
+        if let Some(addr) = value.downcast_ref::<SymbolAddrAttr>() {
+            return GenericOp::new(self.get_operation(), "llvm.mlir.addressof")
+                .prop_raw("global_name", format!("@{}", addr.symbol()))
+                .print(ctx, state, f);
+        }
 
         // MLIR's `llvm.mlir.constant` takes integer, float, string and elements
         // attributes only; these three get an op of their own instead.
@@ -589,9 +776,6 @@ impl ToMlirOp for BlockAddressOp {
 }
 
 /// `llvm.inline_asm`.
-///
-/// A `convergent` entry in pliron's LLVM attributes has no MLIR counterpart
-/// on this op, so it translates to a discardable attribute.
 #[op_interface_impl]
 impl ToMlirOp for InlineAsmOp {
     fn to_mlir(&self, ctx: &Context, state: &State, f: &mut fmt::Formatter<'_>) -> Result<()> {
@@ -604,20 +788,18 @@ impl ToMlirOp for InlineAsmOp {
         let side_effects = self
             .get_attr_llvm_inline_asm_side_effects(ctx)
             .is_some_and(|side_effects| bool::from((*side_effects).clone()));
-        let convergent = self
-            .get_attr_llvm_inline_asm_attrs(ctx)
-            .is_some_and(|attrs| attrs.has("convergent"));
-        let mut generic = GenericOp::new(self.get_operation(), "llvm.inline_asm")
+        no_fn_attrs(
+            self,
+            ctx,
+            "llvm.inline_asm",
+            self.get_attr_llvm_inline_asm_attrs(ctx).as_deref(),
+        )?;
+        GenericOp::new(self.get_operation(), "llvm.inline_asm")
             .results(non_void_results(self.get_operation(), ctx))
             .prop_raw("asm_string", mlir_string_literal(template.as_str()))
-            .prop_raw("constraints", mlir_string_literal(constraints.as_str()));
-        if side_effects {
-            generic = generic.prop_raw("has_side_effects", "unit");
-        }
-        if convergent {
-            generic = generic.attr_raw("llvm_convergent", "unit");
-        }
-        generic.print(ctx, state, f)
+            .prop_raw("constraints", mlir_string_literal(constraints.as_str()))
+            .prop_unit("has_side_effects", side_effects)
+            .print(ctx, state, f)
     }
 }
 
@@ -662,7 +844,13 @@ impl ToMlirOp for CallOp {
             generic = generic.prop_attr("var_callee_type", var_callee_ty);
         }
 
-        generic.print(ctx, state, f)
+        add_call_attrs(
+            generic,
+            self,
+            ctx,
+            self.get_attr_llvm_call_attrs(ctx).as_deref(),
+        )?
+        .print(ctx, state, f)
     }
 }
 
@@ -675,6 +863,12 @@ impl ToMlirOp for CallIntrinsicOp {
             .get_attr_llvm_intrinsic_name(ctx)
             .expect("CallIntrinsicOp is missing its intrinsic name attribute");
         let flags = self.get_attr_llvm_intrinsic_fastmath_flags(ctx);
+        no_fn_attrs(
+            self,
+            ctx,
+            "llvm.call_intrinsic",
+            self.get_attr_llvm_intrinsic_attrs(ctx).as_deref(),
+        )?;
 
         let mut generic = GenericOp::new(self.get_operation(), "llvm.call_intrinsic")
             .results(non_void_results(self.get_operation(), ctx))
@@ -705,7 +899,7 @@ impl ToMlirOp for FuncOp {
         let linkage = self
             .get_attr_llvm_function_linkage(ctx)
             .map_or(LinkageAttr::ExternalLinkage, |l| l.clone());
-        GenericOp::new(self.get_operation(), "llvm.func")
+        let generic = GenericOp::new(self.get_operation(), "llvm.func")
             .prop_attr("function_type", &*func_type)
             .prop_attr("linkage", &linkage)
             .prop_raw(
@@ -714,8 +908,14 @@ impl ToMlirOp for FuncOp {
             )
             // MLIR's `llvm.func` always has a body region; a declaration's is
             // empty. pliron leaves the region out entirely.
-            .min_regions(1)
-            .print(ctx, state, f)
+            .min_regions(1);
+        add_func_attrs(
+            generic,
+            self,
+            ctx,
+            self.get_attr_llvm_func_attrs(ctx).as_deref(),
+        )?
+        .print(ctx, state, f)
     }
 }
 
@@ -742,12 +942,16 @@ impl ToMlirOp for GlobalOp {
                 mlir_string_literal(self.get_symbol_name(ctx).as_ref()),
             )
             .prop_attr_opt("alignment", alignment.as_ref())
+            .prop_unit("constant", self.is_constant(ctx))
             // MLIR's `llvm.mlir.global` always has an initializer region, empty
             // when the initializer is a plain value or absent.
             .min_regions(1);
         // The initializer is type erased (`AttrObj`), so it cannot go through
         // `prop_attr_opt`.
         if let Some(initializer) = &initializer {
+            if global_initializer_needs_lowering(ctx, &***initializer) {
+                return lowering_err(self, ctx, "the initializer of this global");
+            }
             generic = generic.prop_attr("value", &***initializer);
         }
         generic.print(ctx, state, f)
