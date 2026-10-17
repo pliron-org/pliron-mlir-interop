@@ -17,6 +17,8 @@ for more information.
 Translations for pliron's `builtin` and `LLVM` dialects are provided.
 Other dialects must implement translations using the above interfaces.
 
+Current translations target MLIR-23.
+
 ### Testing
 
 `cargo test` checks the translated MLIR against `expect!` based snapshots.
